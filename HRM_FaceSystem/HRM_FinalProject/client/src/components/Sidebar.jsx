@@ -12,6 +12,7 @@ const Sidebar = ({ currentView, setCurrentView, onLogout }) => {
     <div className="sidebar-container">
       <div className="brand">HRM FaceID</div>
       
+      {/* Danh sách Menu */}
       <div style={{ flex: 1 }}>
         {menuItems.map((item) => (
           <div 
@@ -25,9 +26,13 @@ const Sidebar = ({ currentView, setCurrentView, onLogout }) => {
         ))}
       </div>
       
-      <div className="mt-auto">
-        <button className="btn btn-outline-danger w-100" onClick={onLogout}>
-          🚪 Đăng Xuất
+      {/* NÚT ĐĂNG XUẤT (Nằm dưới cùng) */}
+      <div className="mt-auto pt-3 border-top">
+        <button 
+          className="btn btn-outline-danger w-100 btn-sm fw-bold d-flex align-items-center justify-content-center gap-2" 
+          onClick={onLogout}
+        >
+          <span>🚪</span> Đăng Xuất
         </button>
       </div>
     </div>

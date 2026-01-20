@@ -15,12 +15,9 @@ class User(db.Model):
     username = db.Column(db.String(50), unique=True, nullable=False)
     password = db.Column(db.String(255), nullable=False)
     name = db.Column(db.String(100), nullable=False)
-    
-    # --- THÊM 2 CỘT NÀY ---
+    dob = db.Column(db.String(20), nullable=True) # --- CỘT MỚI: NGÀY SINH ---
     email = db.Column(db.String(100), nullable=True)
     phone = db.Column(db.String(20), nullable=True)
-    # ----------------------
-
     role = db.Column(db.String(20), default="user")
     face_encoding = db.Column(db.PickleType, nullable=True) 
     shift_id = db.Column(db.Integer, db.ForeignKey('shift.id'), nullable=True)
