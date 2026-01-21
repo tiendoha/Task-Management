@@ -3,7 +3,7 @@ from flask_cors import CORS
 import cv2
 import numpy as np
 import base64
-import face_recognition
+
 from datetime import datetime, timedelta
 import pandas as pd
 import io
@@ -79,10 +79,10 @@ def register():
     if data.get('image'):
         img = base64_to_image(data.get('image'))
         if img is not None:
-            rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            encodings = face_recognition.face_encodings(rgb_img)
-            if len(encodings) > 0:
-                encodings_to_save = encodings[0]
+            # DeepFace accepts BGR (OpenCV format) directly via ai_engine
+            embedding = AIEngine.extract_embedding(img)
+            if embedding is not None:
+                encodings_to_save = embedding
             else:
                 return jsonify({"success": False, "message": "Không tìm thấy khuôn mặt trong ảnh!"})
     
@@ -147,14 +147,19 @@ def checkin():
     if not known_ids:
         return jsonify({"success": False, "message": "Chưa có dữ liệu khuôn mặt nào!"})
 
-    # Gọi AI Engine xử lý nhận diện & chống giả mạo
-    found_id, is_real, msg = ai_engine.process_image(img, known_encodings, known_ids)
+    # Gọi AI Engine xử lý nhận diện
+    input_embedding = ai_engine.extract_embedding(img)
+    if input_embedding is None:
+        return jsonify({"success": False, "message": "Không nhận diện được khuôn mặt!"})
 
-    if found_id:
-        if not is_real:
-             return jsonify({"success": False, "message": "⚠️ Cảnh báo: Ảnh giả mạo hoặc mắt nhắm!"})
+    matched_user, distance = ai_engine.find_match(input_embedding, users)
 
-        user = User.query.get(found_id)
+    if matched_user:
+        user = matched_user
+        found_id = user.id
+
+        # TODO: Implement liveness check (chống giả mạo) sau.
+        # Hiện tại bỏ qua bước kiểm tra is_real vì AIEngine chưa hỗ trợ.
         now = datetime.now()
 
         # --- LOGIC CHẶN SPAM (Cooldown 60s) ---
@@ -229,10 +234,9 @@ def update_employee(id):
     if data.get('image'):
         img = base64_to_image(data.get('image'))
         if img is not None:
-            rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            encodings = face_recognition.face_encodings(rgb_img)
-            if len(encodings) > 0:
-                user.face_encoding = encodings[0]
+            embedding = AIEngine.extract_embedding(img)
+            if embedding is not None:
+                user.face_encoding = embedding
             else:
                 return jsonify({"success": False, "message": "Ảnh mới không rõ mặt, vui lòng chụp lại!"})
 

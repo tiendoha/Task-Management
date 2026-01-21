@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.env
+
+# Flask
+instance/
+.webassets-cache
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Node.js / React
+node_modules/
+/client/node_modules/
+build/
+dist/
+.npm
+*.log
+
+# DeepFace Weights
+.deepface/
+weights/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Project Specific
+server/instance/*.db
+MIGRATION_NOTE.txt

@@ -1,16 +1,42 @@
-# React + Vite
+# HRM FaceID Client (Frontend)
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Đây là giao diện người dùng (ReactJS) cho hệ thống chấm công FaceID.
 
-Currently, two official plugins are available:
+## 🛠️ Yêu cầu cài đặt
+- **Node.js**: Phiên bản 18 trở lên (Khuyến nghị 20+).
+- **npm** hoặc **yarn**.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+## 🚀 Hướng dẫn cài đặt & Chạy
 
-## React Compiler
+### 1. Cài đặt thư viện
+Mở terminal tại thư mục `client` và chạy lệnh:
+```bash
+npm install
+```
+*(Nếu quá trình cài đặt bị lỗi, hãy thử `npm install --force` hoặc xóa thư mục `node_modules` rồi cài lại).*
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+### 2. Khởi chạy dự án (Môi trường Dev)
+```bash
+npm run dev
+```
+Sau khi chạy xong, truy cập vào đường dẫn hiển thị trên terminal (thường là `http://localhost:5173`).
 
-## Expanding the ESLint configuration
+### 3. Build Production (Khi triển khai thật)
+```bash
+npm run build
+npm run preview
+```
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+## 📦 Các thư viện chính
+Dự án sử dụng các thư viện sau (đã khai báo trong `package.json`):
+- **React 19**: Core framework.
+- **Vite**: Build tool siêu tốc.
+- **Axios**: Gọi API xuống Backend (Flask).
+- **Bootstrap 5**: Giao diện (CSS).
+- **React-Bootstrap**: Component Bootstrap cho React.
+- **React-Webcam**: Xử lý Camera để chụp ảnh khuôn mặt.
+- **Chart.js / React-Chartjs-2**: Vẽ biểu đồ thống kê.
+
+## ⚠️ Lưu ý quan trọng
+- **Backend phải đang chạy**: Đảm bảo bạn đã bật Server Flask (Port 5000) trước khi sử dụng Frontend, nếu không sẽ lỗi kết nối.
+- **Camera**: Trình duyệt có thể yêu cầu cấp quyền Camera, hãy chọn **Allow**.
