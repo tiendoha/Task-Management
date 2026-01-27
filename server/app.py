@@ -7,14 +7,15 @@ import base64
 from datetime import datetime, timedelta
 import pandas as pd
 import io
-from werkzeug.security import generate_password_hash, check_password_hash
-
+from werkzeug.security import generate_password_hash, check_password_hash # Keep for compatibility if needed, but security.py has it too.
 # Import Models và AI Engine
-from models.db_models import db, User, Shift, Attendance
+from models.db_models import db, User, Shift, Attendance, UserRole
 from core.ai_engine import AIEngine
+from core.security import hash_password, verify_password, generate_token, token_required
 
 app = Flask(__name__)
-CORS(app) 
+# Allow Authorization header for JWT
+CORS(app, resources={r"/api/*": {"origins": "*"}}, supports_credentials=True, expose_headers=["Authorization"], allow_headers=["Authorization", "Content-Type"]) 
 
 # Cấu hình Database
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///hrm.db'
@@ -36,12 +37,12 @@ with app.app_context():
     # 2. Tạo tài khoản Admin mặc định (admin / Admin@123)
     # Lưu ý: Admin này sẽ không dùng để chấm công (không có ảnh mặt)
     if not User.query.filter_by(username='admin').first():
-        hashed_pw = generate_password_hash('Admin@123', method='pbkdf2:sha256')
+        hashed_pw = hash_password('Admin@123')
         admin = User(
             name="Administrator", 
             username="admin", 
-            password=hashed_pw, 
-            role="admin", 
+            password_hash=hashed_pw, 
+            role=UserRole.ADMIN, 
             shift_id=1,
             email="admin@hrm.system",
             phone="0000000000"
@@ -65,8 +66,12 @@ def base64_to_image(base64_string):
 # 1. API AUTH: ĐĂNG KÝ & ĐĂNG NHẬP
 # ==========================================
 
-@app.route('/api/register', methods=['POST'])
-def register():
+@app.route('/api/employees', methods=['POST'])
+@token_required(roles=['admin'])
+def create_employee(current_user): # current_user is injected
+    # Note: Route changed from /api/register to /api/employees to match RESTful style and plan
+    # But strictly speaking, the user plan says: Sửa lại hàm register_face hoặc tạo thêm hàm create_employee.
+    # I will replace `register` with `create_employee` at `/api/employees`.
     data = request.json
     
     # 1. Validate trùng username
@@ -87,27 +92,32 @@ def register():
                 return jsonify({"success": False, "message": "Không tìm thấy khuôn mặt trong ảnh!"})
     
     # 3. Mã hóa mật khẩu
-    hashed_pw = generate_password_hash(data.get('password'), method='pbkdf2:sha256')
+    # hashed_pw = generate_password_hash(data.get('password'), method='pbkdf2:sha256') # Old
+    hashed_pw = hash_password(data.get('password'))
+
+    # Role Enum
+    role_str = data.get('role', 'employee')
+    role_enum = UserRole.ADMIN if role_str == 'admin' else UserRole.EMPLOYEE
 
     # 4. Lưu vào DB
     new_user = User(
         name=data.get('name'), 
         username=data.get('username'), 
-        password=hashed_pw,
+        password_hash=hashed_pw,
         email=data.get('email'),
         phone=data.get('phone'),
         dob=data.get('dob'),
-        role=data.get('role', 'user'), 
+        role=role_enum, 
         face_encoding=encodings_to_save,
         shift_id=1
     )
     db.session.add(new_user)
     db.session.commit()
     
-    return jsonify({"success": True, "message": "Thêm nhân viên thành công!"})
+    return jsonify({"success": True, "message": "Thêm nhân viên thành công!", "user": new_user.to_dict()})
 
 
-@app.route('/api/login', methods=['POST'])
+@app.route('/api/auth/login', methods=['POST'])
 def login():
     data = request.json
     username = data.get('username')
@@ -115,17 +125,18 @@ def login():
     
     user = User.query.filter_by(username=username).first()
     
-    if user and check_password_hash(user.password, password):
+    if not user or not user.password_hash:
+        return jsonify({"success": False, "message": "Tài khoản không tồn tại hoặc chưa có mật khẩu!"}), 401
+    
+    if verify_password(user.password_hash, password):
+        token = generate_token(user.id, user.role.value)
         return jsonify({
-            "success": True, 
-            "user": {
-                "id": user.id, 
-                "name": user.name, 
-                "role": user.role
-            }
+            "success": True,
+            "token": token,
+            "user": user.to_dict()
         })
     else:
-        return jsonify({"success": False, "message": "Sai tài khoản hoặc mật khẩu!"})
+        return jsonify({"success": False, "message": "Sai mật khẩu!"})
 
 # ==========================================
 # 2. API CHẤM CÔNG (CORE AI)
@@ -199,13 +210,14 @@ def checkin():
 # ==========================================
 
 @app.route('/api/employees', methods=['GET'])
-def get_employees():
+@token_required(roles=['admin'])
+def get_employees(current_user):
     users = User.query.all()
     return jsonify([{
         "id": u.id, 
         "name": u.name, 
         "username": u.username,
-        "role": u.role, 
+        "role": u.role.value, 
         "email": u.email, 
         "phone": u.phone, 
         "dob": u.dob,

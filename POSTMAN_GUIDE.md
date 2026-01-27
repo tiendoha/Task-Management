@@ -1,32 +1,36 @@
-# Hướng dẫn test API với Postman
+# Hướng dẫn test API với Postman (Update for Auth & RBAC)
 
-Tôi đã tạo file `HRM_FaceID.postman_collection.json` ở thư mục gốc. Bạn hãy làm theo các bước sau:
+Tôi đã cập nhật file `HRM_FaceID.postman_collection.json` để hỗ trợ quy trình xác thực JWT. Bạn hãy làm theo các bước sau:
 
-## 1. Import vào Postman
-- Mở Postman -> Chọn nút **Import** (trên cùng bên trái).
-- Kéo thả file `HRM_FaceID.postman_collection.json` vào.
+## 1. Import lại vào Postman
+- Nếu đã import bản cũ, hãy xóa đi hoặc ghi đè (Replace).
+- Mở Postman -> Chọn nút **Import** (trên cùng bên trái) -> Kéo thả file `HRM_FaceID.postman_collection.json` vào.
 
-## 2. Chuẩn bị ảnh Base64
-Vì API nhận diện khuôn mặt yêu cầu ảnh dạng Base64 string, bạn cần convert một ảnh chụp khuôn mặt sang chuỗi văn bản.
-- **Cách 1:** Vào trang [Base64 Image Encoder](https://www.base64-image.de/). Upload ảnh của bạn -> Copy đoạn code trong nút "Copy Image" (hoặc copy string và thêm tiền tố `data:image/jpeg;base64,` vào đầu).
-- **Cách 2:** Dùng tool online bất kỳ tìm từ khóa "image to base64".
+## 2. Chuẩn bị ảnh Base64 (Như cũ)
+- Dùng [Base64 Image Encoder](https://www.base64-image.de/) để có chuỗi ảnh khuôn mặt.
 
-## 3. Test theo kịch bản
+## 3. Test theo kịch bản (QUAN TRỌNG: Làm theo thứ tự)
 
-### Bước 1: Đăng ký (Register)
-- Mở Request **"1. Đăng ký (Register)"**.
-- Vào Tab **Body**.
-- Tìm trường `"image"` và dán chuỗi Base64 ảnh khuôn mặt bạn vào (thay thế dòng `...(Dán_Base64_vào_đây)...`).
+### Bước 1: Đăng nhập Admin (Login) - BẮT BUỘC
+- Mở Request **"1. Đăng nhập (Login - Lấy Token)"**.
+- Body đã điền sẵn `admin` / `Admin@123` (Tài khoản mặc định).
 - Bấm **Send**.
-- *Kỳ vọng:* Trả về `{"success": true, "message": "Thêm nhân viên thành công!"}`.
+- *Kỳ vọng:* Trả về `{"success": true, "token": "..."}`.
+- **Tự động:** Postman sẽ tự lưu Token này vào biến môi trường `jwt_token` để dùng cho các bước sau.
 
-### Bước 2: Kiểm tra (Check-in)
-- Mở Request **"2. Chấm công (Check-in)"**.
-- Vào Tab **Body**.
-- Dán cùng chuỗi Base64 đó (hoặc ảnh khác của cùng một người) vào trường `"image"`.
+### Bước 2: Tạo nhân viên mới (Admin Only)
+- Mở Request **"2. Tạo nhân viên mới (Admin Only)"**.
+- Vào Tab **Authorization**, đảm bảo Type là "Bearer Token" và Token là `{{jwt_token}}`.
+- Vào Tab **Body**, dán chuỗi Base64 ảnh vào trường `"image"`.
 - Bấm **Send**.
-- *Kỳ vọng:* Trả về tên của bạn và trạng thái (`Done`/`Late`).
-- *Lưu ý:* Lần đầu bấm Send có thể mất 3-5s để Server load model.
+- *Kỳ vọng:* Trả về thông tin nhân viên mới tạo.
 
-### Bước 3: Xem danh sách
-- Chạy Request **"3. Lấy DS Nhân viên"** để xem user bạn vừa tạo đã vào DB chưa.
+### Bước 3: Chấm công (Public API)
+- Mở Request **"3. Chấm công (Check-in - Public)"**.
+- API này công khai, không cần Token.
+- Dán chuỗi Base64 ảnh vào Body -> Bấm **Send**.
+
+### Bước 4: Lấy DS Nhân viên (Admin Only)
+- Mở Request **"4. Lấy DS Nhân viên (Admin Only)"**.
+- API này yêu cầu Token Admin (đã tự động điền).
+- Bấm **Send** -> Trả về danh sách tất cả nhân viên.

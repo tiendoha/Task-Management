@@ -2,12 +2,27 @@
     "info": {
         "_postman_id": "faceid-hrm-migration",
         "name": "HRM FaceID System",
-        "description": "Collection để test hệ thống HRM FaceID mới (DeepFace)",
+        "description": "Collection để test hệ thống HRM FaceID mới (DeepFace) + JWT Auth",
         "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
     },
     "item": [
         {
-            "name": "1. Đăng ký (Register)",
+            "name": "1. Đăng nhập (Login - Lấy Token)",
+            "event": [
+                {
+                    "listen": "test",
+                    "script": {
+                        "exec": [
+                            "var jsonData = pm.response.json();",
+                            "if (jsonData.success && jsonData.token) {",
+                            "    pm.environment.set(\"jwt_token\", jsonData.token);",
+                            "    console.log(\"Token updated:\", jsonData.token);",
+                            "}"
+                        ],
+                        "type": "text/javascript"
+                    }
+                }
+            ],
             "request": {
                 "method": "POST",
                 "header": [
@@ -18,10 +33,10 @@
                 ],
                 "body": {
                     "mode": "raw",
-                    "raw": "{\n    \"username\": \"testuser01\",\n    \"password\": \"123456\",\n    \"name\": \"Nguyen Van Test\",\n    \"email\": \"test@example.com\",\n    \"phone\": \"0987654321\",\n    \"image\": \"data:image/jpeg;base64,...(Dán_Base64_vào_đây)...\"\n}"
+                    "raw": "{\n    \"username\": \"admin\",\n    \"password\": \"Admin@123\"\n}"
                 },
                 "url": {
-                    "raw": "http://127.0.0.1:5000/api/register",
+                    "raw": "http://127.0.0.1:5000/api/auth/login",
                     "protocol": "http",
                     "host": [
                         "127",
@@ -32,15 +47,59 @@
                     "port": "5000",
                     "path": [
                         "api",
-                        "register"
+                        "auth",
+                        "login"
                     ]
                 },
-                "description": "Đăng ký nhân viên mới kèm khuôn mặt. Lưu ý: Cần dán chuỗi Base64 ảnh thật vào trường 'image'."
+                "description": "Đăng nhập với admin/Admin@123 để lấy Token. Token sẽ tự động được lưu vào Environment Variable 'jwt_token'."
             },
             "response": []
         },
         {
-            "name": "2. Chấm công (Check-in)",
+            "name": "2. Tạo nhân viên mới (Admin Only)",
+            "request": {
+                "auth": {
+                    "type": "bearer",
+                    "bearer": [
+                        {
+                            "key": "token",
+                            "value": "{{jwt_token}}",
+                            "type": "string"
+                        }
+                    ]
+                },
+                "method": "POST",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ],
+                "body": {
+                    "mode": "raw",
+                    "raw": "{\n    \"username\": \"testuser02\",\n    \"password\": \"123456\",\n    \"name\": \"Nguyen Van Test 2\",\n    \"email\": \"test2@example.com\",\n    \"phone\": \"0987654321\",\n    \"role\": \"employee\",\n    \"image\": \"data:image/jpeg;base64,...(Dán_Base64_vào_đây)...\"\n}"
+                },
+                "url": {
+                    "raw": "http://127.0.0.1:5000/api/employees",
+                    "protocol": "http",
+                    "host": [
+                        "127",
+                        "0",
+                        "0",
+                        "1"
+                    ],
+                    "port": "5000",
+                    "path": [
+                        "api",
+                        "employees"
+                    ]
+                },
+                "description": "API tạo nhân viên mới (Thay thế Register cũ). Yêu cầu Token Admin."
+            },
+            "response": []
+        },
+        {
+            "name": "3. Chấm công (Check-in - Public)",
             "request": {
                 "method": "POST",
                 "header": [
@@ -68,13 +127,23 @@
                         "checkin"
                     ]
                 },
-                "description": "Gửi ảnh lên để nhận diện. Hệ thống sẽ trả về tên nhân viên và trạng thái (Đúng giờ/Đi muộn)."
+                "description": "Gửi ảnh lên để nhận diện. API này Public không cần Token."
             },
             "response": []
         },
         {
-            "name": "3. Lấy DS Nhân viên",
+            "name": "4. Lấy DS Nhân viên (Admin Only)",
             "request": {
+                "auth": {
+                    "type": "bearer",
+                    "bearer": [
+                        {
+                            "key": "token",
+                            "value": "{{jwt_token}}",
+                            "type": "string"
+                        }
+                    ]
+                },
                 "method": "GET",
                 "header": [],
                 "url": {
@@ -91,39 +160,8 @@
                         "api",
                         "employees"
                     ]
-                }
-            },
-            "response": []
-        },
-        {
-            "name": "4. Đăng nhập (Login)",
-            "request": {
-                "method": "POST",
-                "header": [
-                    {
-                        "key": "Content-Type",
-                        "value": "application/json"
-                    }
-                ],
-                "body": {
-                    "mode": "raw",
-                    "raw": "{\n    \"username\": \"testuser01\",\n    \"password\": \"123456\"\n}"
                 },
-                "url": {
-                    "raw": "http://127.0.0.1:5000/api/login",
-                    "protocol": "http",
-                    "host": [
-                        "127",
-                        "0",
-                        "0",
-                        "1"
-                    ],
-                    "port": "5000",
-                    "path": [
-                        "api",
-                        "login"
-                    ]
-                }
+                "description": "Lấy danh sách nhân viên. Yêu cầu Token Admin."
             },
             "response": []
         }
