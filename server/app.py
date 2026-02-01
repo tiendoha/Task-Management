@@ -9,9 +9,10 @@ import pandas as pd
 import io
 from werkzeug.security import generate_password_hash, check_password_hash # Keep for compatibility if needed, but security.py has it too.
 # Import Models và AI Engine
-from models.db_models import db, User, Shift, Attendance, UserRole
+from models.db_models import db, User, Shift, Attendance, UserRole, AttendanceStatus
 from core.ai_engine import AIEngine
 from core.security import hash_password, verify_password, generate_token, token_required
+from core.shift_manager import ShiftManager
 
 app = Flask(__name__)
 # Allow Authorization header for JWT
@@ -26,30 +27,7 @@ db.init_app(app)
 ai_engine = AIEngine()
 
 # --- KHỞI TẠO DỮ LIỆU BAN ĐẦU ---
-with app.app_context():
-    db.create_all()
-    
-    # 1. Tạo Ca làm việc mặc định
-    if not Shift.query.first():
-        db.session.add(Shift(name="Ca Sáng", start_time="08:00", end_time="17:00"))
-        db.session.commit()
-    
-    # 2. Tạo tài khoản Admin mặc định (admin / Admin@123)
-    # Lưu ý: Admin này sẽ không dùng để chấm công (không có ảnh mặt)
-    if not User.query.filter_by(username='admin').first():
-        hashed_pw = hash_password('Admin@123')
-        admin = User(
-            name="Administrator", 
-            username="admin", 
-            password_hash=hashed_pw, 
-            role=UserRole.ADMIN, 
-            shift_id=1,
-            email="admin@hrm.system",
-            phone="0000000000"
-        )
-        db.session.add(admin)
-        db.session.commit()
-        print(">>> Đã khởi tạo Admin mặc định: admin | Pass: Admin@123")
+
 
 # Hàm hỗ trợ: Chuyển Base64 thành ảnh OpenCV
 def base64_to_image(base64_string):
@@ -152,10 +130,10 @@ def checkin():
 
     # Lấy danh sách vector khuôn mặt đã lưu
     users = User.query.all()
-    known_encodings = [u.face_encoding for u in users if u.face_encoding is not None]
-    known_ids = [u.id for u in users if u.face_encoding is not None]
+    # Filter users with face encoding
+    valid_users = [u for u in users if u.face_encoding is not None]
 
-    if not known_ids:
+    if not valid_users:
         return jsonify({"success": False, "message": "Chưa có dữ liệu khuôn mặt nào!"})
 
     # Gọi AI Engine xử lý nhận diện
@@ -168,40 +146,80 @@ def checkin():
     if matched_user:
         user = matched_user
         found_id = user.id
-
-        # TODO: Implement liveness check (chống giả mạo) sau.
-        # Hiện tại bỏ qua bước kiểm tra is_real vì AIEngine chưa hỗ trợ.
         now = datetime.now()
 
-        # --- LOGIC CHẶN SPAM (Cooldown 60s) ---
-        last_log = Attendance.query.filter_by(user_id=found_id).order_by(Attendance.timestamp.desc()).first()
-        if last_log and (now - last_log.timestamp) < timedelta(seconds=60):
-            # Vẫn trả về success để Frontend dừng quét, nhưng không lưu DB
+        # 1. Tìm ca làm việc tự động
+        matched_shift = ShiftManager.get_matching_shift(now)
+        
+        # 2. Logic Check-in vs Check-out
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        
+        # Tìm attendance của user trong ngày hôm nay (dựa vào checkin_time)
+        attendance = Attendance.query.filter(
+            Attendance.user_id == found_id,
+            Attendance.checkin_time >= today_start
+        ).first()
+
+        if attendance:
+             # --- LOGIC CHẶN SPAM (Cooldown 60s) ---
+            if attendance.checkout_time:
+                # Nếu đã checkout rồi mà check lại, check time diff from checkout
+                last_action_time = attendance.checkout_time
+            else:
+                 # Nếu chưa checkout, check time diff from checkin
+                 last_action_time = attendance.checkin_time
+            
+            if (now - last_action_time) < timedelta(seconds=60):
+                 status_str = "Check-out" if attendance.checkout_time else "Check-in"
+                 return jsonify({
+                    "success": True, 
+                    "name": user.name, 
+                    "status": status_str, # Trả về status text
+                    "message": "Bạn vừa thao tác rồi (Chờ 60s)!"
+                })
+
+            # A. Nếu đã check-in -> Xử lý Check-out
+            attendance.checkout_time = now
+            db.session.commit()
+            
             return jsonify({
-                "success": True, 
-                "name": user.name, 
-                "status": last_log.status, 
-                "message": "Bạn vừa chấm công rồi (Chờ 60s)!"
+                "success": True,
+                "type": "CHECK_OUT",
+                "name": user.name,
+                "status": "Đã về",
+                "message": "Check-out thành công!"
+            })
+        else:
+            # B. Nếu chưa check-in -> Tạo Check-in mới
+            status = AttendanceStatus.ON_TIME
+            shift_id = None
+            
+            if matched_shift:
+                shift_id = matched_shift.id
+                status = ShiftManager.calculate_status(now, matched_shift)
+            else:
+                status = AttendanceStatus.OVERTIME
+                
+            new_attendance = Attendance(
+                user_id=found_id,
+                shift_id=shift_id,
+                checkin_time=now,
+                status=status
+            )
+            db.session.add(new_attendance)
+            db.session.commit()
+            
+            status_vn = "Đúng giờ" if status == AttendanceStatus.ON_TIME else ("Đi muộn" if status == AttendanceStatus.LATE else "Ngoài giờ")
+            shift_name = matched_shift.name if matched_shift else "Tăng ca"
+
+            return jsonify({
+                "success": True,
+                "type": "CHECK_IN",
+                "name": user.name,
+                "status": status_vn,
+                "message": f"Check-in thành công ({status_vn}) - {shift_name}"
             })
 
-        # --- LOGIC TÍNH ĐI MUỘN ---
-        # Lấy giờ bắt đầu ca (ví dụ 08:00) ghép với ngày hiện tại
-        shift_start = datetime.strptime(user.shift.start_time, "%H:%M").replace(
-            year=now.year, month=now.month, day=now.day
-        )
-        status = "Đi muộn" if now > shift_start else "Đúng giờ"
-        
-        # Lưu Log
-        new_log = Attendance(user_id=found_id, status=status)
-        db.session.add(new_log)
-        db.session.commit()
-        
-        return jsonify({
-            "success": True, 
-            "name": user.name, 
-            "status": status, 
-            "message": "Điểm danh thành công!"
-        })
     else:
         return jsonify({"success": False, "message": "Không nhận diện được khuôn mặt!"})
 
@@ -275,10 +293,14 @@ def get_stats():
     total_users = User.query.count()
     
     today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    logs_today = Attendance.query.filter(Attendance.timestamp >= today_start).all()
+    # Using checkin_time instead of timestamp
+    logs_today = Attendance.query.filter(Attendance.checkin_time >= today_start).all()
     
     present_count = len(set([l.user_id for l in logs_today]))
-    late_count = len([l for l in logs_today if l.status == 'Đi muộn'])
+    # Status is now Enum, convert to value for comparison or compare with Enum member
+    # DB stores Enum name or value? SQLAlchemyEnum stores name by default 
+    # But usually we compare with Enum
+    late_count = len([l for l in logs_today if l.status == AttendanceStatus.LATE])
     
     return jsonify({
         "total_employees": total_users,
@@ -290,29 +312,78 @@ def get_stats():
 @app.route('/api/logs', methods=['GET'])
 def get_logs():
     # Lấy 20 log mới nhất
-    logs = Attendance.query.order_by(Attendance.timestamp.desc()).limit(20).all()
+    logs = Attendance.query.order_by(Attendance.checkin_time.desc()).limit(20).all()
     results = [{
         "name": l.user.name, 
-        "time": l.timestamp.strftime("%H:%M:%S %d/%m"), 
-        "status": l.status
+        "time": l.checkin_time.strftime("%H:%M:%S %d/%m") if l.checkin_time else "", 
+        "checkout": l.checkout_time.strftime("%H:%M:%S %d/%m") if l.checkout_time else "-",
+        "status": l.status.value if hasattr(l.status, 'value') else str(l.status)
     } for l in logs]
     return jsonify(results)
 
-@app.route('/api/shifts', methods=['GET', 'POST'])
-def manage_shifts():
-    if request.method == 'GET':
-        shifts = Shift.query.all()
-        return jsonify([{"id": s.id, "name": s.name, "start": s.start_time, "end": s.end_time} for s in shifts])
+@app.route('/api/shifts', methods=['GET'])
+def get_shifts():
+    shifts = Shift.query.all()
+    return jsonify([{
+        "id": s.id, 
+        "name": s.name, 
+        "start_time": s.start_time, 
+        "end_time": s.end_time,
+        "grace_period_minutes": s.grace_period_minutes
+    } for s in shifts])
+
+@app.route('/api/shifts', methods=['POST'])
+def create_shift():
+    data = request.json
+    name = data.get('name')
+    start_time = data.get('start_time')
+    end_time = data.get('end_time')
+    grace = data.get('grace_period_minutes', 15)
     
-    if request.method == 'POST':
-        data = request.json
-        shift = Shift.query.get(1) # Demo: Chỉ sửa ca đầu tiên
-        if shift:
-            shift.start_time = data.get('start_time')
-            shift.end_time = data.get('end_time')
-            db.session.commit()
-            return jsonify({"success": True})
-        return jsonify({"success": False})
+    if not name or not start_time or not end_time:
+         return jsonify({"success": False, "message": "Thiếu thông tin bắt buộc (name, start_time, end_time)"}), 400
+
+    new_shift = Shift(name=name, start_time=start_time, end_time=end_time, grace_period_minutes=grace)
+    db.session.add(new_shift)
+    db.session.commit()
+    
+    return jsonify({
+        "success": True, 
+        "message": "Tạo ca thành công", 
+        "shift": {
+            "id": new_shift.id,
+            "name": new_shift.name
+        }
+    })
+
+@app.route('/api/shifts/<int:id>', methods=['PUT'])
+@token_required(roles=['admin'])
+def update_shift(current_user, id):
+    shift = Shift.query.get(id)
+    if not shift:
+        return jsonify({"success": False, "message": "Ca làm việc không tồn tại"}), 404
+    
+    data = request.json
+    shift.name = data.get('name', shift.name)
+    shift.start_time = data.get('start_time', shift.start_time)
+    shift.end_time = data.get('end_time', shift.end_time)
+    shift.grace_period_minutes = data.get('grace_period_minutes', shift.grace_period_minutes)
+    
+    db.session.commit()
+    return jsonify({"success": True, "message": "Cập nhật ca thành công"})
+
+# API để tạo nhanh Ca làm việc (Seeding)
+@app.route('/api/seed/shifts', methods=['POST'])
+def seed_shifts():
+    if Shift.query.count() > 0:
+        return jsonify({"msg": "Shifts already exist"}), 400
+        
+    s1 = Shift(name="Ca Sáng", start_time="08:00:00", end_time="12:00:00", grace_period_minutes=15)
+    s2 = Shift(name="Ca Chiều", start_time="13:00:00", end_time="17:00:00", grace_period_minutes=15)
+    
+    db.session.add_all([s1, s2])
+    db.session.commit()
+    return jsonify({"msg": "Shifts created!"})
 
 @app.route('/api/export_excel', methods=['GET'])
 def export_excel():
@@ -323,8 +394,9 @@ def export_excel():
             "Mã NV": l.user.id,
             "Họ Tên": l.user.name,
             "Email": l.user.email,
-            "Thời Gian": l.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
-            "Trạng Thái": l.status
+            "Check-in": l.checkin_time.strftime("%Y-%m-%d %H:%M:%S") if l.checkin_time else "",
+            "Check-out": l.checkout_time.strftime("%Y-%m-%d %H:%M:%S") if l.checkout_time else "",
+            "Trạng Thái": l.status.value if hasattr(l.status, 'value') else str(l.status)
         })
     
     df = pd.DataFrame(data)
@@ -341,5 +413,28 @@ def export_excel():
     )
 
 if __name__ == '__main__':
+    # --- KHỞI TẠO DỮ LIỆU BAN ĐẦU ---
+    with app.app_context():
+        db.create_all()
+        
+        # 1. Tạo Ca làm việc mặc định (Nếu chưa có)
+        pass
+        
+        # 2. Tạo tài khoản Admin mặc định (admin / Admin@123)
+        if not User.query.filter_by(username='admin').first():
+            hashed_pw = hash_password('Admin@123')
+            admin = User(
+                name="Administrator", 
+                username="admin", 
+                password_hash=hashed_pw, 
+                role=UserRole.ADMIN, 
+                shift_id=1,
+                email="admin@hrm.system",
+                phone="0000000000"
+            )
+            db.session.add(admin)
+            db.session.commit()
+            print(">>> Đã khởi tạo Admin mặc định: admin | Pass: Admin@123")
+
     # Chạy server
     app.run(debug=True, port=5000)

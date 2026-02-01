@@ -11,25 +11,27 @@ class UserRole(enum.Enum):
     ADMIN = "admin"
     EMPLOYEE = "employee"
 
+# 1. Định nghĩa Enum trạng thái chấm công
+class AttendanceStatus(enum.Enum):
+    ON_TIME = "on_time"       # Đúng giờ
+    LATE = "late"             # Đi muộn
+    EARLY_LEAVE = "early"     # Về sớm
+    OVERTIME = "overtime"     # Ngoài giờ (Không thuộc ca nào)
+
 class Shift(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(50), nullable=False)
-    start_time = db.Column(db.String(10), nullable=False)
-    end_time = db.Column(db.String(10), nullable=False)
-    users = db.relationship('User', backref='shift', lazy=True)
+    start_time = db.Column(db.String(8), nullable=False) # HH:MM:SS
+    end_time = db.Column(db.String(8), nullable=False)   # HH:MM:SS
+    grace_period_minutes = db.Column(db.Integer, default=15)
+    # Relationship defined in User via backref
 
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     
     # 1. Thông tin đăng nhập
     username = db.Column(db.String(50), unique=True, nullable=False)
-    password = db.Column(db.String(255), nullable=True) # Đổi tên thành password cho khớp code cũ hoặc sửa code cũ? User request dùng password_hash. Let's stick to user request but check app.py compatibility.
-    # WAIT: The user request asks for `password_hash` column but in step 4.2 uses `password_hash` in `User` model but `app.py` usually uses `password`.
-    # Code cũ trong app.py dùng `password`. Plan user gửi: `password_hash = db.Column...`
-    # Tôi sẽ dùng `password` theo code cũ để đỡ phải sửa nhiều chỗ khác, hoặc tôi sẽ sửa hết thành `password_hash` theo đúng chuẩn.
-    # User Request code mẫu: `password_hash = db.Column...`. OK I will use `password` to be consistent with existing checks or I should rename it. 
-    # Let's verify: Code cũ `user.password`. User request new model `password_hash`.
-    # I will follow the User Request to use `password_hash` and strict to the plan. I will refactor app.py to use `password_hash` later.
+    password = db.Column(db.String(255), nullable=True) # Để tương thích code cũ
     password_hash = db.Column(db.String(255), nullable=True)
 
     # 2. Role
@@ -42,7 +44,11 @@ class User(db.Model):
     phone = db.Column(db.String(20), nullable=True)
     
     face_encoding = db.Column(db.PickleType, nullable=True) 
+    
+    # Foreign Key & Relationship
     shift_id = db.Column(db.Integer, db.ForeignKey('shift.id'), nullable=True)
+    shift = db.relationship('Shift', backref='users')
+    
     attendances = db.relationship('Attendance', backref='user', lazy=True)
 
     def to_dict(self):
@@ -60,5 +66,15 @@ class User(db.Model):
 class Attendance(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    timestamp = db.Column(db.DateTime, default=datetime.now)
-    status = db.Column(db.String(50))
+    
+    # 2. Link với Shift để biết hôm đó làm ca nào
+    shift_id = db.Column(db.Integer, db.ForeignKey('shift.id'), nullable=True)
+    
+    checkin_time = db.Column(db.DateTime, nullable=True)
+    checkout_time = db.Column(db.DateTime, nullable=True)
+    
+    # 3. Lưu trạng thái
+    status = db.Column(SQLAlchemyEnum(AttendanceStatus), default=AttendanceStatus.ON_TIME)
+    
+    # Relationships
+    shift = db.relationship('Shift', backref='attendances')
