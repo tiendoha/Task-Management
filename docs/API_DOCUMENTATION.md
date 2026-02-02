@@ -54,6 +54,61 @@ Logic "Smart Shift" tự động xác định ca dựa trên giờ Check-in.
 ### Get Employees
 - **Endpoint**: `GET /api/employees`
 - **Header**: `Authorization: Bearer <admin_token>`
+- **Response**: List of users with detailed fields:
+  ```json
+  [
+    {
+      "id": 1,
+      "name": "User One",
+      "username": "user1",
+      "role": "employee",
+      "email": "user1@example.com",
+      "phone": "0123456789",
+      "dob": "1990-01-01",
+      "shift": "Ca Sáng",
+      "shift_id": 1,
+      "face_image": true
+    }
+  ]
+  ```
+
+### Get Employee by ID
+- **Endpoint**: `GET /api/employees/<id>`
+- **Header**: `Authorization: Bearer <admin_token>`
+- **Response**: Detailed object for specific user.
+  ```json
+  {
+      "id": 1,
+      "name": "User One",
+      "username": "user1",
+      "role": "employee",
+      "email": "...",
+      "phone": "...",
+      "dob": "...",
+      "shift": "Ca Sáng",
+      "shift_id": 1,
+      "face_image": true
+  }
+  ```
+
+---
+
+### Update Employee
+- **Endpoint**: `PUT /api/employees/<id>`
+- **Header**: `Authorization: Bearer <admin_token>`
+- **Body**:
+  ```json
+  {
+      "name": "New Name",
+      "email": "new@example.com",
+      "role": "admin",
+      "shift_id": 2,
+      "password": "new_password",        // Optional (Requires oldPassword)
+      "oldPassword": "current_password", // Required if changing password
+      "image": "data:image/jpeg;base64,..." // Optional (Updates FaceID)
+  }
+  ```
+- **Response**: `{ "success": true, "message": "Cập nhật thành công!" }`
 
 ---
 

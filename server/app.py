@@ -239,50 +239,95 @@ def get_employees(current_user):
         "email": u.email, 
         "phone": u.phone, 
         "dob": u.dob,
-        "shift": u.shift.name if u.shift else "-"
+        "shift": u.shift.name if u.shift else "-",
+        "shift_id": u.shift_id,
+        "face_image": True if u.face_encoding is not None else False
     } for u in users])
 
-@app.route('/api/employees/<int:id>', methods=['PUT'])
-def update_employee(id):
+@app.route('/api/employees/<int:id>', methods=['GET'])
+@token_required(roles=['admin'])
+def get_employee_by_id(current_user, id):
     user = User.query.get(id)
-    if not user: return jsonify({"success": False, "message": "Nhân viên không tồn tại"})
+    
+    if not user:
+        return jsonify({
+            "success": False,
+            "message": "Nhân viên không tồn tại"
+        }), 404
+
+    return jsonify({
+        "id": user.id,
+        "name": user.name,
+        "username": user.username,
+        "role": user.role.value,
+        "email": user.email,
+        "phone": user.phone,
+        "dob": user.dob,
+        "shift": user.shift.name if user.shift else "-",
+        "shift_id": user.shift_id,
+        "face_image": True if user.face_encoding is not None else False
+    })
+
+@app.route('/api/employees/<int:id>', methods=['PUT'])
+@token_required(roles=['admin'])
+def update_employee(current_user, id):
+    user = User.query.get(id)
+    if not user:
+        return jsonify({"success": False, "message": "Nhân viên không tồn tại"}), 404
     
     data = request.json
     
-    # Cập nhật thông tin cơ bản
+    # 2. Update basic fields
     user.name = data.get('name', user.name)
     user.email = data.get('email', user.email)
     user.phone = data.get('phone', user.phone)
     user.dob = data.get('dob', user.dob)
-    user.role = data.get('role', user.role)
     
-    # Cập nhật mật khẩu (Nếu có nhập mới)
-    if data.get('password') and data.get('password').strip():
-        user.password = generate_password_hash(data.get('password'), method='pbkdf2:sha256')
+    if data.get('role'):
+        try:
+            user.role = UserRole(data.get('role'))
+        except ValueError:
+            pass
+            
+    if data.get('shift_id'):
+        user.shift_id = int(data.get('shift_id'))
 
-    # Cập nhật FaceID (Nếu có chụp lại ảnh)
+    # 3. Password Change Logic
+    if data.get('password'):
+        old_password = data.get('oldPassword')
+        # Check if oldPassword is present and matches
+        if not old_password or not user.password_hash or not check_password_hash(user.password_hash, old_password):
+            return jsonify({"message": "Mật khẩu cũ không đúng"}), 400
+        
+        # Hash new password
+        user.password_hash = generate_password_hash(data.get('password'))
+
+    # 4. FaceID Update Logic
     if data.get('image'):
         img = base64_to_image(data.get('image'))
-        if img is not None:
-            embedding = AIEngine.extract_embedding(img)
-            if embedding is not None:
-                user.face_encoding = embedding
-            else:
-                return jsonify({"success": False, "message": "Ảnh mới không rõ mặt, vui lòng chụp lại!"})
+        # Note: Request asks to use AIEngine.extract_embedding
+        embedding = AIEngine.extract_embedding(img)
+        
+        if embedding is None:
+            return jsonify({"message": "Ảnh không rõ mặt, vui lòng chụp lại"}), 400
+        else:
+            user.face_encoding = embedding
 
     db.session.commit()
     return jsonify({"success": True, "message": "Cập nhật thành công!"})
 
 @app.route('/api/employees/<int:id>', methods=['DELETE'])
-def delete_employee(id):
+@token_required(roles=['admin'])
+def delete_employee(current_user, id):
     user = User.query.get(id)
-    if user:
-        # Xóa hết lịch sử chấm công của người này trước
-        Attendance.query.filter_by(user_id=id).delete()
-        db.session.delete(user)
-        db.session.commit()
-        return jsonify({"success": True, "message": "Đã xóa nhân viên!"})
-    return jsonify({"success": False, "message": "Không tìm thấy nhân viên!"})
+    if not user:
+        return jsonify({"success": False, "message": "Nhân viên không tồn tại"}), 404
+        
+    # Xóa hết lịch sử chấm công của người này trước
+    Attendance.query.filter_by(user_id=id).delete()
+    db.session.delete(user)
+    db.session.commit()
+    return jsonify({"success": True, "message": "Đã xóa nhân viên"})
 
 # ==========================================
 # 4. API BÁO CÁO & TIỆN ÍCH
