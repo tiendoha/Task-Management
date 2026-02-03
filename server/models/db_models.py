@@ -60,7 +60,9 @@ class User(db.Model):
             "email": self.email,
             "phone": self.phone,
             "dob": self.dob,
-            "shift": self.shift.name if self.shift else "-"
+            "shift_id": self.shift_id,
+            "shift_name": self.shift.name if self.shift else "-",
+            "face_image": True if self.face_encoding is not None else False
         }
 
 class Attendance(db.Model):
