@@ -1,6 +1,5 @@
 from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
-# Critical Fix 1: Add missing imports from werkzeug.security and datetime
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime, timedelta
 import pandas as pd
@@ -11,6 +10,7 @@ import base64
 
 # Import Models và AI Engine
 from models.db_models import db, User, Shift, Attendance, UserRole, AttendanceStatus
+from sqlalchemy import func 
 from core.ai_engine import AIEngine
 from core.security import hash_password, verify_password, generate_token, token_required
 from core.shift_manager import ShiftManager
@@ -28,7 +28,7 @@ db.init_app(app)
 ai_engine = AIEngine()
 
 # ==========================================
-# 1. API AUTH & EMPLOYEE MANAGEMENT
+# 1. API AUTH: ĐĂNG KÝ & ĐĂNG NHẬP
 # ==========================================
 
 @app.route('/api/auth/login', methods=['POST'])
@@ -62,15 +62,14 @@ def login():
 def create_employee(current_user):
     data = request.json
     
-    # Validate required username
+    # 1. Validate trùng username
     if User.query.filter_by(username=data.get('username')).first():
         return jsonify({"success": False, "message": "Tên đăng nhập đã tồn tại!"}), 400
 
     encodings_to_save = None
     
-    # Handle Face Image
+    # 2. Xử lý ảnh (nếu có)
     if data.get('image'):
-        # Critical Fix 2: Use AIEngine.base64_to_image
         img = AIEngine.base64_to_image(data.get('image'))
         if img is not None:
              embedding = AIEngine.extract_embedding(img)
@@ -79,10 +78,8 @@ def create_employee(current_user):
              else:
                  return jsonify({"success": False, "message": "Ảnh không rõ mặt, vui lòng chụp lại!"}), 400
     
-    # Hash password
-    # Prompt asked to use hash_password (which calls generate_password_hash)
-    # or direclty generate_password_hash?
-    # "Hash password using hash_password." -> from core.security
+    # 3. Mã hóa mật khẩu
+    # hashed_pw = generate_password_hash(data.get('password'), method='pbkdf2:sha256') # Old
     hashed_pw = hash_password(data.get('password'))
 
     # Role Enum
@@ -187,13 +184,12 @@ def get_employee_by_id(current_user, id):
     return jsonify(user.to_dict())
 
 # ==========================================
-# 2. API ATTENDANCE (CORE AI)
+# 2. API CHẤM CÔNG (CORE AI)
 # ==========================================
 
 @app.route('/api/checkin', methods=['POST'])
 def checkin():
     data = request.json
-    # Critical Fix 2: Use AIEngine.base64_to_image
     img = AIEngine.base64_to_image(data.get('image'))
     
     if img is None:
@@ -216,7 +212,7 @@ def checkin():
         user = matched_user
         now = datetime.now()
         
-        # Critical Fix 3: Use ShiftManager.get_matching_shift(now)
+        # 1. Tìm ca làm việc tự động
         matched_shift = ShiftManager.get_matching_shift(now)
         
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -302,6 +298,72 @@ def get_stats():
         "present_today": present_count,
         "late_today": late_count,
         "absent": total_users - present_count
+    })
+
+@app.route('/api/stats/top-late', methods=['GET'])
+@token_required(roles=['admin'])
+def get_top_late_stats(current_user):
+    today = datetime.now()
+    start_of_month = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    
+    results = db.session.query(
+        Attendance.user_id, 
+        func.count(Attendance.id)
+    ).filter(
+        Attendance.checkin_time >= start_of_month,
+        Attendance.status == AttendanceStatus.LATE
+    ).group_by(
+        Attendance.user_id
+    ).order_by(
+        func.count(Attendance.id).desc()
+    ).limit(5).all()
+    
+    data = []
+    for user_id, count in results:
+        user = User.query.get(user_id)
+        if user:
+            data.append({
+                "name": user.name,
+                "count": count,
+                "avatar": True if user.face_encoding is not None else False
+            })
+            
+    return jsonify(data)
+
+@app.route('/api/stats/chart', methods=['GET'])
+@token_required(roles=['admin'])
+def get_chart_stats(current_user):
+    today = datetime.now()
+    dates = [(today - timedelta(days=i)).date() for i in range(6, -1, -1)]
+    
+    # Initialize data structure
+    stats_map = {d: {'late': 0, 'ontime': 0} for d in dates}
+    
+    start_date = dates[0]
+    end_date = dates[-1] + timedelta(days=1) # Ensure we cover the full last day
+    
+    logs = Attendance.query.filter(
+        Attendance.checkin_time >= start_date,
+        Attendance.checkin_time < end_date
+    ).all()
+    
+    for log in logs:
+        log_date = log.checkin_time.date()
+        if log_date in stats_map:
+            if log.status == AttendanceStatus.LATE:
+                stats_map[log_date]['late'] += 1
+            elif log.status == AttendanceStatus.ON_TIME:
+                stats_map[log_date]['ontime'] += 1
+    
+    # Format for output
+    labels = [d.strftime("%d/%m") for d in dates]
+    data_late = [stats_map[d]['late'] for d in dates]
+    data_ontime = [stats_map[d]['ontime'] for d in dates]
+    
+    return jsonify({
+        "labels": labels,
+        "data_late": data_late,
+        "data_ontime": data_ontime
     })
 
 @app.route('/api/logs', methods=['GET'])

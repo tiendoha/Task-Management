@@ -1,7 +1,7 @@
 # Work Log - Advanced Employee API Implementation
 
 ## Overview
-Successfully implemented and verified the Advanced Employee Management APIs in `server/app.py`.
+Successfully implemented and verified the Advanced Employee Management APIs and Statistics in `server/app.py`.
 
 ### Completed Features
 1.  **Update Employee (`PUT /api/employees/<id>`)**
@@ -21,29 +21,28 @@ Successfully implemented and verified the Advanced Employee Management APIs in `
     -   Returns `404` if user not found, `200` on success.
 3.  **Get Employee (`GET /api/employees/<id>`)**
     -   **Detailed Response**: Returns object including `role`, `shift` name, and `face_image` (boolean status).
-4.  **Get All Employees (`GET /api/employees`)**
-    -   **List Response**: Returns list of all employees with detailed info.
+4.  **Top Late Statistics (`GET /api/stats/top-late`)**
+    -   **Endpoint**: Protected by Admin Token.
+    -   **Logic**: Returns top 5 employees with the most LATE records in the current month.
+    -   **Format**: `[{"name": "...", "count": 5, "avatar": true}]`.
+5.  **7-Day Chart Statistics (`GET /api/stats/chart`)**
+    -   **Endpoint**: Protected by Admin Token.
+    -   **Logic**: Aggregates `LATE` vs `ON_TIME` records for the last 7 days.
+    -   **Format**:
+        ```json
+        {
+          "labels": ["29/01", "30/01", ...],
+          "data_late": [0, 1, ...],
+          "data_ontime": [5, 2, ...]
+        }
+        ```
 
 ## Verification
 All endpoints have been verified using:
 1.  `verify_api.py` (Unit Tests for CRUD)
 2.  `test_backend_logic.py` (Comprehensive Backend Logic Tests) - **PASSED 4/4 Test Cases**
-
-### Test Case Results
-1.  **Shift Management**:
-    -   POST Create: **PASS**
-    -   PUT Update: **PASS**
-    -   GET List: **PASS**
-2.  **Employee CRUD**:
-    -   POST Create (Full fields): **PASS**
-    -   GET Detail (Check shift_name, email): **PASS**
-    -   PUT Update: **PASS**
-3.  **Password Security**:
-    -   Wrong oldPassword -> 400: **PASS**
-    -   Correct oldPassword -> 200: **PASS**
-4.  **Attendance Logic**:
-    -   Auto-detect Shift (Ca Sang) based on Mock Time (08:10): **PASS**
-    -   Status "Đúng giờ": **PASS**
+3.  `test_top_late.py` (Statistics Logic) - **PASSED**
+4.  `test_chart_stats.py` (Chart Data Logic) - **PASSED**
 
 ## Troubleshooting & Dev Notes (Common Errors)
 If encountering issues during team development/testing, please check:
@@ -51,17 +50,11 @@ If encountering issues during team development/testing, please check:
 ### 1. Token Authentication (`401 Unauthorized`)
 -   **Issue**: API returns "Token is missing!".
 -   **Fix**: Ensure the `Authorization` header follows the format: `Bearer <token>`.
-    -   *Correct*: `Authorization: Bearer eyJhbGci...`
-    -   *Incorrect*: `Authorization: eyJhbGci...`
 
-### 2. Password Update Fails (`400 Bad Request`)
--   **Issue**: API returns "Mật khẩu cũ không đúng".
--   **Fix**: Ensure `oldPassword` is sent in the request body and matches the current database hash. The system uses `pbkdf2:sha256` by default via `werkzeug.security`.
+### 2. Import Errors
+-   **Issue**: `NameError: name 'func' is not defined`.
+-   **Fix**: Ensure `from sqlalchemy import func` is present in `server/app.py`.
 
 ### 3. FaceID Update Fails
 -   **Issue**: API returns "Ảnh không rõ mặt, vui lòng chụp lại".
 -   **Fix**: The `AIEngine` failed to detect a face in the provided base64 image. Ensure the image is well-lit and contains a clear single face.
-
-### 4. Import Errors (`cv2`, `deepface`)
--   **Issue**: Server crashes on start or verification script fails.
--   **Fix**: Ensure all AI dependencies are installed: `pip install opencv-python deepface tensorflow`.
