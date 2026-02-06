@@ -9,11 +9,12 @@ import numpy as np
 import base64
 
 # Import Models và AI Engine
-from models.db_models import db, User, Shift, Attendance, UserRole, AttendanceStatus
+from models.db_models import db, User, Shift, Attendance, UserRole, AttendanceStatus, LeaveRequest, LeaveType, LeaveStatus
 from sqlalchemy import func 
 from core.ai_engine import AIEngine
 from core.security import hash_password, verify_password, generate_token, token_required
 from core.shift_manager import ShiftManager
+from core.leave_manager import LeaveManager
 
 app = Flask(__name__)
 # Allow Authorization header for JWT
@@ -26,6 +27,121 @@ db.init_app(app)
 
 # Khởi tạo AI Engine
 ai_engine = AIEngine()
+
+# ==========================================
+# 4. API LEAVE MANAGEMENT
+# ==========================================
+
+@app.route('/api/leaves', methods=['POST'])
+@token_required()
+def create_leave_request(current_user):
+    data = request.json
+    try:
+        leave_type = LeaveType(data.get('leave_type'))
+    except ValueError:
+        return jsonify({"success": False, "message": "Loại nghỉ phép không hợp lệ"}), 400
+        
+    start_str = data.get('start_date')
+    end_str = data.get('end_date')
+    reason = data.get('reason')
+    
+    try:
+        start_date = datetime.strptime(start_str, "%Y-%m-%d")
+        end_date = datetime.strptime(end_str, "%Y-%m-%d")
+    except ValueError:
+        return jsonify({"success": False, "message": "Định dạng ngày không hợp lệ (YYYY-MM-DD)"}), 400
+        
+    if start_date > end_date:
+        return jsonify({"success": False, "message": "Ngày bắt đầu phải trước ngày kết thúc"}), 400
+        
+    new_request = LeaveRequest(
+        user_id=current_user.id,
+        leave_type=leave_type,
+        start_date=start_date,
+        end_date=end_date,
+        reason=reason,
+        status=LeaveStatus.PENDING
+    )
+    
+    db.session.add(new_request)
+    db.session.commit()
+    
+    return jsonify({"success": True, "message": "Đã gửi yêu cầu nghỉ phép"})
+
+@app.route('/api/leaves', methods=['GET'])
+@token_required()
+def get_leave_requests(current_user):
+    # If Admin -> Get All
+    # If Employee -> Get Own
+    
+    if current_user.role == UserRole.ADMIN:
+        requests = LeaveRequest.query.join(User).add_columns(
+            LeaveRequest.id, LeaveRequest.user_id, User.name, 
+            LeaveRequest.leave_type, LeaveRequest.start_date, 
+            LeaveRequest.end_date, LeaveRequest.reason, 
+            LeaveRequest.status, LeaveRequest.created_at
+        ).order_by(LeaveRequest.created_at.desc()).all()
+        
+        results = []
+        for r in requests:
+            results.append({
+                "id": r.id,
+                "user_id": r.user_id,
+                "user_name": r.name,
+                "leave_type": r.leave_type.value,
+                "start_date": r.start_date.strftime("%Y-%m-%d"),
+                "end_date": r.end_date.strftime("%Y-%m-%d"),
+                "reason": r.reason,
+                "status": r.status.value,
+                "created_at": r.created_at.strftime("%Y-%m-%d %H:%M")
+            })
+            
+    else:
+        requests = LeaveRequest.query.filter_by(user_id=current_user.id).order_by(LeaveRequest.created_at.desc()).all()
+        results = [{
+            "id": r.id,
+            "user_id": r.user_id,
+            "leave_type": r.leave_type.value,
+            "start_date": r.start_date.strftime("%Y-%m-%d"),
+            "end_date": r.end_date.strftime("%Y-%m-%d"),
+            "reason": r.reason,
+            "status": r.status.value,
+            "created_at": r.created_at.strftime("%Y-%m-%d %H:%M")
+        } for r in requests]
+
+    return jsonify(results)
+
+@app.route('/api/leaves/<int:id>', methods=['PUT'])
+@token_required(roles=['admin'])
+def update_leave_request(current_user, id):
+    data = request.json
+    status_str = data.get('status')
+    comment = data.get('comment')
+    
+    req = LeaveRequest.query.get(id)
+    if not req:
+        return jsonify({"success": False, "message": "Không tìm thấy yêu cầu"}), 404
+        
+    if status_str == "APPROVED":
+        # Critical Logic via LeaveManager
+        success, msg = LeaveManager.approve_leave_request(id, current_user.id)
+        if success:
+            if comment:
+                req.admin_comment = comment
+                db.session.commit()
+            return jsonify({"success": True, "message": msg})
+        else:
+            return jsonify({"success": False, "message": msg}), 400
+            
+    elif status_str == "REJECTED":
+        req.status = LeaveStatus.REJECTED
+        req.admin_comment = comment
+        db.session.commit()
+        return jsonify({"success": True, "message": "Đã từ chối yêu cầu"})
+        
+    else:
+        return jsonify({"success": False, "message": "Trạng thái không hợp lệ"}), 400
+
 
 # ==========================================
 # 1. API AUTH: ĐĂNG KÝ & ĐĂNG NHẬP
@@ -42,11 +158,7 @@ def login():
     # Check if user exists and password is correct
     if not user or not user.password_hash:
         return jsonify({"success": False, "message": "Tài khoản không tồn tại hoặc chưa cài đặt mật khẩu!"}), 401
-    
-    # verify_password wrapper or check_password_hash directly?
-    # Using imported verify_password from core.security which wraps check_password_hash likely.
-    # But let's use the standard check_password_hash for clarity if verify_password is ambiguous.
-    # Actually core.security.verify_password uses check_password_hash as seen in file view.
+
     if verify_password(user.password_hash, password):
         token = generate_token(user.id, user.role.value)
         return jsonify({

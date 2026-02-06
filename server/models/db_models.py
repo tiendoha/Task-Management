@@ -17,6 +17,17 @@ class AttendanceStatus(enum.Enum):
     LATE = "late"             # Đi muộn
     EARLY_LEAVE = "early"     # Về sớm
     OVERTIME = "overtime"     # Ngoài giờ (Không thuộc ca nào)
+    ON_LEAVE = "on_leave"     # Nghỉ phép
+
+class LeaveStatus(enum.Enum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+class LeaveType(enum.Enum):
+    SICK_LEAVE = "sick_leave"
+    ANNUAL_LEAVE = "annual_leave"
+    PERSONAL_LEAVE = "personal_leave"
 
 class Shift(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -50,6 +61,7 @@ class User(db.Model):
     shift = db.relationship('Shift', backref='users')
     
     attendances = db.relationship('Attendance', backref='user', lazy=True)
+    leaves = db.relationship('LeaveRequest', backref='user', lazy=True)
 
     def to_dict(self):
         return {
@@ -80,3 +92,14 @@ class Attendance(db.Model):
     
     # Relationships
     shift = db.relationship('Shift', backref='attendances')
+
+class LeaveRequest(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    leave_type = db.Column(SQLAlchemyEnum(LeaveType), nullable=False)
+    start_date = db.Column(db.DateTime, nullable=False)
+    end_date = db.Column(db.DateTime, nullable=False)
+    reason = db.Column(db.String(255), nullable=True)
+    status = db.Column(SQLAlchemyEnum(LeaveStatus), default=LeaveStatus.PENDING)
+    admin_comment = db.Column(db.String(255), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
