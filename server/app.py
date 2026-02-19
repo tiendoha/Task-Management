@@ -393,6 +393,96 @@ def checkin():
         return jsonify({"success": False, "message": "Không nhận diện được khuôn mặt!"}), 400
 
 # ==========================================
+# 2.1. API ĐĂNG KÝ KHUÔN MẶT (3 GÓC)
+# ==========================================
+@app.route('/api/face-setup/analyze', methods=['POST'])
+@token_required(roles=['admin'])
+def analyze_face_pose(current_user):
+    data = request.json
+    image_b64 = data.get('image')
+    step = data.get('current_step', 'center')  # center, left, right
+
+    if not image_b64:
+        return jsonify({"success": False, "message": "Thieu anh"}), 400
+
+    img = AIEngine.base64_to_image(image_b64)
+    if img is None:
+        return jsonify({"success": False, "message": "Anh loi"}), 400
+
+    # check goc mat
+    from core.ai_engine import FaceQualityEngine
+    pose, msg = FaceQualityEngine.analyze_pose(img)
+    print(f"[face-setup] step {step} - detected {pose} ({msg})")
+
+    # check step co khop ko
+    if step == 'center' and pose != 'center':
+        return jsonify({"success": False, "message": f"Nhin thang di! ({msg})"}), 400
+    if step == 'left' and pose != 'left':
+        return jsonify({"success": False, "message": f"Quay trai di! ({msg})"}), 400
+    if step == 'right' and pose != 'right':
+        return jsonify({"success": False, "message": f"Quay phai di! ({msg})"}), 400
+
+    try:
+        from deepface import DeepFace
+
+        # anti spoof + extract face
+        faces = DeepFace.extract_faces(
+            img_path=img,
+            detector_backend="opencv",
+            enforce_detection=True,
+            anti_spoofing=True
+        )
+
+        if not faces:
+            return jsonify({"success": False, "message": "Khong tim thay mat"}), 400
+
+        # check mat that ko (deepface tra is_real)
+        if not faces[0].get("is_real", True):
+            return jsonify({"success": False, "message": "Mat gia mao!"}), 400
+
+        # lay embedding
+        embedding = AIEngine.extract_embedding(img)
+        if not embedding:
+            return jsonify({"success": False, "message": "Khong trich xuat duoc vector"}), 400
+
+        return jsonify({
+            "success": True,
+            "embedding": embedding,
+            "message": "OK",
+            "pose": pose
+        })
+
+    except Exception as e:
+        print(f"[ERROR analyze] {str(e)}")
+        return jsonify({"success": False, "message": "Loi xu ly"}), 500
+
+
+@app.route('/api/face-setup/finish', methods=['POST'])
+@token_required(roles=['admin'])
+def finish_face_setup(current_user):
+    data = request.json
+    user_id = data.get('user_id')
+    embeddings = data.get('embeddings')  # list of lists
+
+    if not user_id or not embeddings:
+        return jsonify({"success": False, "message": "Thieu du lieu"}), 400
+
+    if len(embeddings) == 0:
+        return jsonify({"success": False, "message": "Vector trong"}), 400
+
+    from core.ai_engine import FaceQualityEngine
+    avg_emb = FaceQualityEngine.calculate_average_embedding(embeddings)
+
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({"success": False, "message": "User khong ton tai"}), 404
+
+    user.face_encoding = avg_emb
+    db.session.commit()
+
+    return jsonify({"success": True, "message": "Dang ky khuon mat xong (3 goc)"})
+
+# ==========================================
 # 3. API BÁO CÁO & SHIFT
 # ==========================================
 

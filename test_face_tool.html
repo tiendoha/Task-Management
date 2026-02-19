@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Test Face Registration (3 Angles)</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; }
+        .container { display: flex; gap: 20px; }
+        .step { border: 1px solid #ccc; padding: 10px; border-radius: 8px; width: 300px; }
+        video { width: 100%; border-radius: 4px; }
+        button { margin-top: 10px; padding: 8px 16px; cursor: pointer; }
+        .status { margin-top: 5px; font-weight: bold; }
+        .success { color: green; }
+        .error { color: red; }
+    </style>
+</head>
+<body>
+    <h1>Test Face Registration (3 Angles)</h1>
+    <div style="margin-bottom: 20px;">
+        <label>User ID to Update: <input type="number" id="userId" value="1"></label>
+        <button onclick="startCamera()">Start Camera</button>
+    </div>
+
+    <div class="container">
+        <div class="step">
+            <h3>1. Left Angle</h3>
+            <video id="videoLeft" autoplay playsinline></video>
+            <button onclick="captureAndAnalyze('left')">Capture & Analyze</button>
+            <div id="statusLeft" class="status">Waiting...</div>
+        </div>
+        <div class="step">
+            <h3>2. Center Angle</h3>
+            <video id="videoCenter" autoplay playsinline></video>
+            <button onclick="captureAndAnalyze('center')">Capture & Analyze</button>
+            <div id="statusCenter" class="status">Waiting...</div>
+        </div>
+        <div class="step">
+            <h3>3. Right Angle</h3>
+            <video id="videoRight" autoplay playsinline></video>
+            <button onclick="captureAndAnalyze('right')">Capture & Analyze</button>
+            <div id="statusRight" class="status">Waiting...</div>
+        </div>
+    </div>
+
+    <div style="margin-top: 20px;">
+        <button onclick="finishRegistration()" style="font-size: 1.2em; padding: 10px 20px;">Finish Registration</button>
+        <div id="finalStatus" class="status"></div>
+    </div>
+
+    <script>
+        let stream;
+        const embeddings = { left: null, center: null, right: null };
+
+        async function startCamera() {
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                document.getElementById('videoLeft').srcObject = stream;
+                document.getElementById('videoCenter').srcObject = stream;
+                document.getElementById('videoRight').srcObject = stream;
+            } catch (err) {
+                alert("Error accessing camera: " + err);
+            }
+        }
+
+        async function captureAndAnalyze(step) {
+            const video = document.getElementById('video' + step.charAt(0).toUpperCase() + step.slice(1));
+            const statusDiv = document.getElementById('status' + step.charAt(0).toUpperCase() + step.slice(1));
+            
+            const canvas = document.createElement('canvas');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            canvas.getContext('2d').drawImage(video, 0, 0);
+            const base64 = canvas.toDataURL('image/jpeg');
+
+            statusDiv.innerText = "Analyzing...";
+            statusDiv.className = "status";
+
+            try {
+                // Login not implemented in this test file, assume Admin Token or disable Auth in server temporarily for testing
+                // OR: We need a valid token. 
+                // Let's assume the user can disable Auth or we login first.
+                // For simplicity, I'll alert user to ensure server is running and they might need to update code to skip auth or Login first.
+                // Actually, let's try to login as admin first automatically? 
+                // Hardcoded admin creds from app.py: admin | Admin@123
+                
+                let token = localStorage.getItem('token');
+                if (!token) {
+                    const loginResp = await fetch('http://localhost:5000/api/auth/login', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ username: 'admin', password: 'Admin@123' })
+                    });
+                    const loginData = await loginResp.json();
+                    if (loginData.success) {
+                        token = loginData.token;
+                        localStorage.setItem('token', token);
+                        console.log("Logged in as Admin");
+                    } else {
+                        statusDiv.innerText = "Login Failed: " + loginData.message;
+                        statusDiv.className = "status error";
+                        return;
+                    }
+                }
+
+                const response = await fetch('http://localhost:5000/api/face-setup/analyze', {
+                    method: 'POST',
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'Authorization': token 
+                    },
+                    body: JSON.stringify({ image: base64, current_step: step })
+                });
+
+                const data = await response.json();
+                if (data.success) {
+                    embeddings[step] = data.embedding;
+                    statusDiv.innerText = "OK! Pose: " + data.pose;
+                    statusDiv.className = "status success";
+                } else {
+                    statusDiv.innerText = "Fail: " + data.message;
+                    statusDiv.className = "status error";
+                }
+            } catch (err) {
+                statusDiv.innerText = "Error: " + err;
+                statusDiv.className = "status error";
+            }
+        }
+
+        async function finishRegistration() {
+            const statusDiv = document.getElementById('finalStatus');
+            const userId = document.getElementById('userId').value;
+            
+            const vectorList = [];
+            if (embeddings.left) vectorList.push(embeddings.left);
+            if (embeddings.center) vectorList.push(embeddings.center);
+            if (embeddings.right) vectorList.push(embeddings.right);
+
+            if (vectorList.length === 0) {
+                statusDiv.innerText = "No embeddings captured!";
+                statusDiv.className = "status error";
+                return;
+            }
+
+            statusDiv.innerText = "Saving...";
+            
+            try {
+                const token = localStorage.getItem('token');
+                const response = await fetch('http://localhost:5000/api/face-setup/finish', {
+                    method: 'POST',
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'Authorization': token 
+                    },
+                    body: JSON.stringify({ user_id: userId, embeddings: vectorList })
+                });
+                
+                const data = await response.json();
+                if (data.success) {
+                    statusDiv.innerText = "Success: " + data.message;
+                    statusDiv.className = "status success";
+                } else {
+                    statusDiv.innerText = "Fail: " + data.message;
+                    statusDiv.className = "status error";
+                }
+            } catch (err) {
+                 statusDiv.innerText = "Error: " + err;
+                 statusDiv.className = "status error";
+            }
+        }
+    </script>
+</body>
+</html>
