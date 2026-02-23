@@ -123,7 +123,14 @@ Logic "Smart Shift" tự động xác định ca dựa trên giờ Check-in.
     3. Kiểm tra User đã check-in hôm nay chưa?
         - **Chưa**: Tạo record `Check-in`. Tính trạng thái (Đúng giờ / Đi muộn) dựa trên `start_time` + `grace_period`.
         - **Rồi**: Update record đó thành `Check-out` (Nếu time diff > 60s).
-- **Response**: Trả về `status` (text tiếng Việt) để hiển thị lên màn hình.
+- **Response (Thành công)**: Trả về `status` (text tiếng Việt) để hiển thị lên màn hình.
+- **Response (Thất bại - Face Anti-Spoofing)**: Nếu đưa ảnh màn hình điện thoại hoặc ảnh in mờ, AI sẽ từ chối và cảnh báo.
+  ```json
+  {
+    "success": false, 
+    "message": "Không nhận diện được khuôn mặt: Spoofing detected: Phát hiện hình ảnh giả mạo!"
+  }
+  ```
 
 ---
 
@@ -152,11 +159,12 @@ Dành cho FE: Lưu ý luồng gọi API gồm 2 bước: gọi `analyze` 3 lần
     "pose": "center"
   }
   ```
-- **Response (Thất bại - Quay sai góc hoặc lỗi)**: FE hiển thị `message` để hướng dẫn người dùng điều chỉnh tư thế.
+- **Response (Thất bại - Quay sai góc hoặc lỗi hình ảnh)**: FE hiển thị `message` để hướng dẫn người dùng điều chỉnh tư thế. 
+  Đặc biệt, nếu ảnh giả mạo sẽ trả về lỗi từ Anti-Spoofing:
   ```json
   {
     "success": false, 
-    "message": "Hãy nhìn thẳng! (Đang quay trái)"
+    "message": "Lỗi: Spoofing detected: Phát hiện hình ảnh giả mạo!"
   }
   ```
 
@@ -204,3 +212,17 @@ Trong quá trình phát triển tính năng này, tôi đã gặp và xử lý c
 ### 4. Dependency Conflicts
 - **Vấn đề**: `numpy` 2.0 gây lỗi với `tensorflow`.
 - **Giải pháp**: Force `numpy<2` trong `requirements.txt`.
+
+---
+
+## 7. Advanced AI Features (Tính năng AI Nâng cao)
+
+### 1. Model Warm-up (Khởi chạy trước Model)
+- **Vấn đề**: Theo mặc định, `DeepFace` chỉ load model Face Recognition (ArcFace) và Anti-Spoofing (Fasnet) vào RAM khi API Check-in/Analyze được request gọi lần đầu tiên. Điều này khiến User đầu tiên sử dụng hệ thống mất từ 5 - 10 giây chờ loading.
+- **Giải pháp**: Hệ thống backend đã tích hợp function `AIEngine.warm_up_models()`. Hàm này sẽ tự động generate một frame ảnh giả màu đen để "đánh lừa" pipeline DeepFace, bắt model tải trước 100% dung lượng vào Memory Core.
+- **Lợi ích**: Khi server chạy hoàn tất (có log `[INFO] Warm-up hoàn tất!`), tốc độ response cho mọi User từ request đầu tiên trở đi sẽ nhanh tức thời và chỉ còn tốn thời gian xử lý ảnh.
+
+### 2. Liveness Detection / Face Anti-Spoofing (Chống giả mạo mặt)
+- **Cơ chế**: AI tích hợp Fasnet. Khi quét ảnh từ API `/api/checkin` hoặc `/api/face-setup/analyze`, thuật toán tiến hành bóc tách khuôn mặt và đánh giá tính thực (`is_real`).
+- **Xử lý góc nghiêng WebCam**: Để tránh việc camera thấp dìm góc mặt bị Anti-Spoofing dập nhầm (báo là ảnh giả), hệ thống tự động chèn option `align=True` vào lõi phân tích `get_embedding`. Thuật toán sẽ xoay trục ngang 2 mắt cân bằng trước khi scan mức liveness.
+- **Quy trình hoạt động**: Dân văn phòng/Nhân sự không thể cầm điện thoại chiếu vào màn hình, hoặc cầm ảnh thẻ giơ lên máy chấm công. AI phát hiện và ném văng token, reject API với thông báo: `Spoofing detected: Phát hiện hình ảnh giả mạo!`.
