@@ -1,6 +1,5 @@
 from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
-from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime, timedelta
 import pandas as pd
 import io
@@ -153,21 +152,43 @@ def login():
     username = data.get('username')
     password = data.get('password')
     
+    if not username or not password:
+        return jsonify({"success": False, "message": "Vui lòng nhập đầy đủ thông tin"}), 400
+        
     user = User.query.filter_by(username=username).first()
     
-    # Check if user exists and password is correct
-    if not user or not user.password_hash:
-        return jsonify({"success": False, "message": "Tài khoản không tồn tại hoặc chưa cài đặt mật khẩu!"}), 401
+    # Check if user exists and password is correct (Consolidated error for security)
+    if not user or not user.password_hash or not verify_password(user.password_hash, password):
+        return jsonify({"success": False, "message": "Tên đăng nhập hoặc mật khẩu không đúng"}), 401
 
-    if verify_password(user.password_hash, password):
-        token = generate_token(user.id, user.role.value)
-        return jsonify({
-            "success": True,
-            "token": token,
-            "user": user.to_dict()
-        })
-    else:
-        return jsonify({"success": False, "message": "Sai mật khẩu!"}), 401
+    token = generate_token(user.id, user.role.value)
+    return jsonify({
+        "success": True,
+        "token": token,
+        "user": user.to_dict()
+    })
+
+@app.route('/api/profile', methods=['PUT'])
+@token_required()
+def update_profile(current_user):
+    data = request.json
+    
+    # Basic info update logic
+    current_user.name = data.get('name', current_user.name)
+    current_user.email = data.get('email', current_user.email)
+    current_user.phone = data.get('phone', current_user.phone)
+    current_user.dob = data.get('dob', current_user.dob)
+    
+    # Password update logic
+    if data.get('password'):
+        old_password = data.get('oldPassword')
+        if not old_password or not current_user.password_hash or not verify_password(current_user.password_hash, old_password):
+            return jsonify({"success": False, "message": "Mật khẩu cũ không đúng"}), 400
+        
+        current_user.password_hash = hash_password(data.get('password'))
+
+    db.session.commit()
+    return jsonify({"success": True, "message": "Cập nhật thông tin thành công!", "user": current_user.to_dict()}), 200
 
 @app.route('/api/employees', methods=['POST'])
 @token_required(roles=['admin'])
@@ -244,12 +265,12 @@ def update_employee(current_user, id):
     # Password Change Logic
     if data.get('password'):
         old_password = data.get('oldPassword')
-        # Critical Check using check_password_hash
-        if not old_password or not user.password_hash or not check_password_hash(user.password_hash, old_password):
-            return jsonify({"message": "Mật khẩu cũ không đúng"}), 400
+        # Critical Check using verify_password
+        if not old_password or not user.password_hash or not verify_password(user.password_hash, old_password):
+            return jsonify({"success": False, "message": "Mật khẩu cũ không đúng"}), 400
         
-        # Update using generate_password_hash
-        user.password_hash = generate_password_hash(data.get('password'))
+        # Update using hash_password
+        user.password_hash = hash_password(data.get('password'))
 
     # FaceID Update Logic
     if data.get('image'):
@@ -411,7 +432,7 @@ def analyze_face_pose(current_user):
 
     # check goc mat
     from core.ai_engine import FaceQualityEngine
-    pose, msg = FaceQualityEngine.analyze_pose(img)
+    pose, msg = FaceQualityEngine.check_pose(img)
     print(f"[face-setup] step {step} - detected {pose} ({msg})")
 
     # check step co khop ko
@@ -471,7 +492,7 @@ def finish_face_setup(current_user):
         return jsonify({"success": False, "message": "Vector trong"}), 400
 
     from core.ai_engine import FaceQualityEngine
-    avg_emb = FaceQualityEngine.calculate_average_embedding(embeddings)
+    avg_emb = FaceQualityEngine.avg_embedding(embeddings)
 
     user = User.query.get(user_id)
     if not user:

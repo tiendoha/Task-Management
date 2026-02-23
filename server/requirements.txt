@@ -7,7 +7,7 @@ numpy<2
 Flask
 Flask-SQLAlchemy
 Flask-Cors
-# opencv-python
+opencv-python
 
 PyJWT
 werkzeug

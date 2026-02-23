@@ -34,3 +34,13 @@ Tôi đã cập nhật file `HRM_FaceID.postman_collection.json` để hỗ tr�
 - Mở Request **"4. Lấy DS Nhân viên (Admin Only)"**.
 - API này yêu cầu Token Admin (đã tự động điền).
 - Bấm **Send** -> Trả về danh sách tất cả nhân viên.
+
+### Bước 5: Đăng ký khuôn mặt 3 góc (Analyze & Finish)
+*Quy trình này dành cho Frontend/Kiosk để đăng ký khuôn mặt.*
+1. **API Analyze (`POST /api/face-setup/analyze`)**:
+   - Headers: `Authorization: Bearer {{jwt_token}}`
+   - Body: Truyền ảnh Base64 và `current_step` (`center`, `left`, `right`).
+   - Kết quả: Nhận mảng `embedding` nếu thành công.
+2. **API Finish (`POST /api/face-setup/finish`)**:
+   - Body: Truyền `user_id` và mảng các `embeddings` (chứa 3 mảng `embedding` thu được từ bước 1).
+   - Kết quả: Server tính trung bình và lưu dữ liệu.

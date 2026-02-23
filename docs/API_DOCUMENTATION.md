@@ -127,7 +127,65 @@ Logic "Smart Shift" tự động xác định ca dựa trên giờ Check-in.
 
 ---
 
-## 5. Development Notes & Troubleshooting (Các lỗi đã gặp)
+## 5. Face Registration (Đăng ký khuôn mặt 3 góc)
+
+Công năng này dành riêng cho luồng tạo/đăng ký khuôn mặt mới, yêu cầu quét đủ 3 góc (Chính diện, Trái, Phải) để đảm bảo dữ liệu nhận diện chính xác.
+Dành cho FE: Lưu ý luồng gọi API gồm 2 bước: gọi `analyze` 3 lần (cho 3 góc), sau đó gom kết quả gọi `finish`.
+
+### API 1: Phân tích góc mặt (Analyze)
+- **Endpoint**: `POST /api/face-setup/analyze`
+- **Header**: `Authorization: Bearer <admin_token>`
+- **Mô tả**: Gửi ảnh chụp quét khuôn mặt theo góc yêu cầu. Hệ thống sẽ kiểm tra góc mặt, chống giả mạo và trả về Vector đặc trưng (Embedding).
+- **Body**:
+  ```json
+  {
+    "image": "data:image/jpeg;base64,...",
+    "current_step": "center" // Các bước hợp lệ: "center", "left", "right"
+  }
+  ```
+- **Response (Thành công - Đúng góc mặt)**: FE cần lưu mảng `embedding` trả về lại vào State/Cache để dành cho bước Finish.
+  ```json
+  {
+    "success": true, 
+    "embedding": [-0.0123, 0.445, ...], 
+    "message": "OK", 
+    "pose": "center"
+  }
+  ```
+- **Response (Thất bại - Quay sai góc hoặc lỗi)**: FE hiển thị `message` để hướng dẫn người dùng điều chỉnh tư thế.
+  ```json
+  {
+    "success": false, 
+    "message": "Hãy nhìn thẳng! (Đang quay trái)"
+  }
+  ```
+
+### API 2: Hoàn tất lưu dữ liệu (Finish)
+- **Endpoint**: `POST /api/face-setup/finish`
+- **Header**: `Authorization: Bearer <admin_token>`
+- **Mô tả**: Gọi một lần DUY NHẤT sau khi đã đi qua đủ 3 góc ở API Analyze.
+- **Body**: Gửi `user_id` nhân viên cần cập nhật khuôn mặt, cùng với mảng các `embedding` đã thu được ở bước Analyze.
+  ```json
+  {
+    "user_id": 1,
+    "embeddings": [
+      [-0.01, 0.44, ...], // Vector từ ảnh Center
+      [0.02, -0.12, ...], // Vector từ ảnh Left
+      [-0.03, 0.05, ...]  // Vector từ ảnh Right
+    ]
+  }
+  ```
+- **Response**: Hệ thống tự nối các vector lại lấy trung bình (Average Pooling) và lưu vào database.
+  ```json
+  {
+    "success": true, 
+    "message": "Hoàn tất đăng ký khuôn mặt (3 góc)!"
+  }
+  ```
+
+---
+
+## 6. Development Notes & Troubleshooting (Các lỗi đã gặp)
 
 Trong quá trình phát triển tính năng này, tôi đã gặp và xử lý các vấn đề sau:
 
