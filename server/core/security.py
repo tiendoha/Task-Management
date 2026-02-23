@@ -17,7 +17,7 @@ def verify_password(password_hash, password):
 def generate_token(user_id, role):
     """Tạo JWT Token có hạn 24h"""
     payload = {
-        "sub": user_id,
+        "sub": str(user_id),
         "role": role,
         "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=24)
     }
@@ -45,7 +45,7 @@ def token_required(roles=None):
             try:
                 # 2. Giải mã Token
                 data = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-                current_user = User.query.get(data["sub"])
+                current_user = User.query.get(int(data["sub"]))
                 user_role = data["role"]
                 
                 if not current_user:
