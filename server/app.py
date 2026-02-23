@@ -19,6 +19,18 @@ app = Flask(__name__)
 # Allow Authorization header for JWT
 CORS(app, resources={r"/api/*": {"origins": "*"}}, supports_credentials=True, expose_headers=["Authorization"], allow_headers=["Authorization", "Content-Type"])
 
+@app.errorhandler(500)
+def internal_server_error(e):
+    return jsonify({"success": False, "message": f"Server crash: Vui lòng liên hệ Admin ({str(e)})"}), 500
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    # Pass through HTTP errors
+    if hasattr(e, 'code'):
+        return jsonify({"success": False, "message": str(e)}), e.code
+    # Treat non-HTTP errors as 500
+    return jsonify({"success": False, "message": f"Lỗi nội bộ: {str(e)}"}), 500
+
 # Cấu hình Database
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///hrm.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -205,11 +217,11 @@ def create_employee(current_user):
     if data.get('image'):
         img = AIEngine.base64_to_image(data.get('image'))
         if img is not None:
-             embedding = AIEngine.extract_embedding(img)
+             embedding, msg = AIEngine.get_embedding(img)
              if embedding is not None:
                  encodings_to_save = embedding
              else:
-                 return jsonify({"success": False, "message": "Ảnh không rõ mặt, vui lòng chụp lại!"}), 400
+                 return jsonify({"success": False, "message": f"Lỗi ảnh: {msg}"}), 400
     
     # 3. Mã hóa mật khẩu
     # hashed_pw = generate_password_hash(data.get('password'), method='pbkdf2:sha256') # Old
@@ -277,11 +289,11 @@ def update_employee(current_user, id):
         # Critical Fix 2: Use AIEngine.base64_to_image
         img = AIEngine.base64_to_image(data.get('image'))
         if img is not None:
-            embedding = AIEngine.extract_embedding(img)
+            embedding, msg = AIEngine.get_embedding(img)
             if embedding is not None:
                 user.face_encoding = embedding
             else:
-                return jsonify({"message": "Ảnh không rõ mặt, vui lòng chụp lại"}), 400
+                return jsonify({"message": f"Ảnh lỗi: {msg}"}), 400
         else:
              return jsonify({"message": "Lỗi dữ liệu ảnh"}), 400
 
@@ -334,10 +346,10 @@ def checkin():
     if not valid_users:
         return jsonify({"success": False, "message": "Chưa có dữ liệu khuôn mặt nào trong hệ thống!"}), 400
 
-    # Extract & Match
-    input_embedding = AIEngine.extract_embedding(img)
+    # Extract & Match (Anti-Spoofing handled inside AIEngine)
+    input_embedding, msg = AIEngine.get_embedding(img)
     if input_embedding is None:
-        return jsonify({"success": False, "message": "Không nhận diện được khuôn mặt!"}), 400
+        return jsonify({"success": False, "message": f"Không nhận diện được khuôn mặt: {msg}"}), 400
 
     matched_user, distance = AIEngine.find_match(input_embedding, users)
 
@@ -444,27 +456,10 @@ def analyze_face_pose(current_user):
         return jsonify({"success": False, "message": f"Quay phai di! ({msg})"}), 400
 
     try:
-        from deepface import DeepFace
-
-        # anti spoof + extract face
-        faces = DeepFace.extract_faces(
-            img_path=img,
-            detector_backend="opencv",
-            enforce_detection=True,
-            anti_spoofing=True
-        )
-
-        if not faces:
-            return jsonify({"success": False, "message": "Khong tim thay mat"}), 400
-
-        # check mat that ko (deepface tra is_real)
-        if not faces[0].get("is_real", True):
-            return jsonify({"success": False, "message": "Mat gia mao!"}), 400
-
-        # lay embedding
-        embedding = AIEngine.extract_embedding(img)
+        # lay embedding (Anti-spoofing is now inside get_embedding)
+        embedding, msg = AIEngine.get_embedding(img)
         if not embedding:
-            return jsonify({"success": False, "message": "Khong trich xuat duoc vector"}), 400
+            return jsonify({"success": False, "message": f"Lỗi: {msg}"}), 400
 
         return jsonify({
             "success": True,
@@ -698,5 +693,9 @@ if __name__ == '__main__':
             db.session.add(admin)
             db.session.commit()
             print(">>> Init Admin: admin | Admin@123")
+
+    # Warm-up AI Models before starting server
+    from core.ai_engine import AIEngine
+    AIEngine.warm_up_models()
 
     app.run(debug=True, port=5000)

@@ -1,8 +1,13 @@
 import cv2
 import numpy as np
 import base64
+import logging
 from deepface import DeepFace
 import mediapipe as mp
+
+# Configure Logger
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # config
 MODEL = "ArcFace"
@@ -11,7 +16,7 @@ MATCH_THRESHOLD = 0.68
 
 class AIEngine:
     @staticmethod
-    def base64_to_img(b64_str):
+    def base64_to_image(b64_str):
         if "base64," in b64_str:
             b64_str = b64_str.split(",")[1]
         bytes_data = base64.b64decode(b64_str)
@@ -20,23 +25,78 @@ class AIEngine:
         return img
 
     @staticmethod
-    def get_embedding(img):
+    def warm_up_models():
+        """
+        Forces DeepFace to load Face Recognition and Face Anti-Spoofing models
+        into memory on startup.
+        """
+        logger.info("Bắt đầu Warm-up AI Model...")
         try:
+            # Create a dummy image
+            dummy_img = np.zeros((224, 224, 3), dtype=np.uint8)
+            # Call extract_faces to load Fasnet (Anti-Spoofing) and Face Detector
+            DeepFace.extract_faces(img_path=dummy_img, enforce_detection=False, anti_spoofing=True)
+            # Call represent to load Face Recognition model
+            DeepFace.represent(img_path=dummy_img, model_name=MODEL, enforce_detection=False, detector_backend=BACKEND)
+            logger.info("Warm-up hoàn tất! Model đã sẵn sàng xử lý request.")
+        except Exception as e:
+            logger.warning(f"Warm-up exception (non-fatal): {e}")
+
+    @staticmethod
+    def get_embedding(img):
+        """
+        Extracts face embedding with Anti-spoofing protection.
+        Returns: (embedding_vector, "OK") or (None, error_message)
+        """
+        try:
+            # Step 1: Detect face and check for spoofing
+            faces = DeepFace.extract_faces(
+                img_path=img,
+                enforce_detection=True,
+                detector_backend=BACKEND,
+                align=True,
+                anti_spoofing=True
+            )
+            
+            if not faces:
+                return None, "Không tìm thấy khuôn mặt nào!"
+                
+            face_obj = faces[0]
+            
+            # Step 2 & 3: Anti-spoofing check
+            if not face_obj.get("is_real", True):
+                logger.warning("Spoofing detected!")
+                return None, "Spoofing detected: Phát hiện hình ảnh giả mạo!"
+                
+            # Step 4: Extract embedding on the cropped face to save time/recalculation
+            cropped_face = face_obj["face"]
+            # DeepFace returns face in RGB and scaled [0, 1]. Represent handles this if we pass the numpy array.
+            # Convert back to uint8 [0, 255] for standard represent pipeline if needed, but represent handles floats too.
+            # Actually, the safest way is to call represent on the original image but with enforce_detection=False
+            # because we already know a real face is there. Let's do that for simplicity and accuracy.
             res = DeepFace.represent(
                 img_path=img,
                 model_name=MODEL,
                 enforce_detection=False,
                 detector_backend=BACKEND
             )
+            
             if res:
-                return res[0]["embedding"]
-            return None
+                return res[0]["embedding"], "OK"
+            return None, "Không thể trích xuất vector khuôn mặt."
+            
+        except ValueError as ve:
+            # DeepFace raises ValueError if no face is found when enforce_detection=True
+            if "Face could not be detected" in str(ve):
+                return None, "Không tìm thấy khuôn mặt nào!"
+            logger.error(f"[get_embedding ValueError] {ve}")
+            return None, "Lỗi xử lý hình ảnh."
         except Exception as e:
-            print(f"[emb error] {e}")
-            return None
+            logger.error(f"[get_embedding Exception] {e}")
+            return None, "Lỗi xử lý hình ảnh."
 
     @staticmethod
-    def find_best_match(emb_input, users):
+    def find_match(emb_input, users):
         if not emb_input:
             return None, 1.0
 

@@ -196,8 +196,17 @@ def capture_and_send(step, token):
             try:
                 print(f"Sending request for {step}...")
                 response = requests.post(API_URL, json=payload, headers=headers)
-                data = response.json()
-                
+                try:
+                    data = response.json()
+                except Exception as json_err:
+                    print(f"Error parsing JSON! HTTP {response.status_code}")
+                    print(f"Server Response: {response.text}")
+                    cv2.putText(preview_frame, "SERVER ERROR", (20, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
+                    cv2.imshow(f'Capture for {step}', preview_frame)
+                    cv2.waitKey(1000)
+                    continue
+
+                print(data)
                 if data.get("success"):
                     print(">>> SUCCESS!")
                     cap.release()
