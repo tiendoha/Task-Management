@@ -82,43 +82,29 @@ def create_leave_request(current_user):
 @app.route('/api/leaves', methods=['GET'])
 @token_required()
 def get_leave_requests(current_user):
-    # If Admin -> Get All
-    # If Employee -> Get Own
+    scope = request.args.get("scope", "me")
     
-    if current_user.role == UserRole.ADMIN:
-        requests = LeaveRequest.query.join(User).add_columns(
-            LeaveRequest.id, LeaveRequest.user_id, User.name, 
-            LeaveRequest.leave_type, LeaveRequest.start_date, 
-            LeaveRequest.end_date, LeaveRequest.reason, 
-            LeaveRequest.status, LeaveRequest.created_at
-        ).order_by(LeaveRequest.created_at.desc()).all()
-        
-        results = []
-        for r in requests:
-            results.append({
-                "id": r.id,
-                "user_id": r.user_id,
-                "user_name": r.name,
-                "leave_type": r.leave_type.value,
-                "start_date": r.start_date.strftime("%Y-%m-%d"),
-                "end_date": r.end_date.strftime("%Y-%m-%d"),
-                "reason": r.reason,
-                "status": r.status.value,
-                "created_at": r.created_at.strftime("%Y-%m-%d %H:%M")
-            })
-            
+    if scope == "all" and current_user.role == UserRole.ADMIN:
+        requests = LeaveRequest.query.order_by(LeaveRequest.created_at.desc()).all()
     else:
+        # Fallback to "me" scope or if the user is not an Admin trying to access "all"
         requests = LeaveRequest.query.filter_by(user_id=current_user.id).order_by(LeaveRequest.created_at.desc()).all()
-        results = [{
+        
+    results = []
+    for r in requests:
+        user_name = r.user.name if r.user else "Unknown User"
+        
+        results.append({
             "id": r.id,
             "user_id": r.user_id,
+            "user_name": user_name,
             "leave_type": r.leave_type.value,
             "start_date": r.start_date.strftime("%Y-%m-%d"),
             "end_date": r.end_date.strftime("%Y-%m-%d"),
             "reason": r.reason,
             "status": r.status.value,
             "created_at": r.created_at.strftime("%Y-%m-%d %H:%M")
-        } for r in requests]
+        })
 
     return jsonify(results)
 
