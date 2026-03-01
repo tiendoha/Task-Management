@@ -1,5 +1,6 @@
 from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
+from flasgger import Swagger
 from datetime import datetime, timedelta
 import pandas as pd
 import io
@@ -8,16 +9,70 @@ import numpy as np
 import base64
 
 # Import Models và AI Engine
-from models.db_models import db, User, Shift, Attendance, UserRole, AttendanceStatus, LeaveRequest, LeaveType, LeaveStatus
+from models.db_models import db, User, Shift, Attendance, UserRole, AttendanceStatus, LeaveRequest, LeaveType, LeaveStatus, Payroll
 from sqlalchemy import func 
 from core.ai_engine import AIEngine
 from core.security import hash_password, verify_password, generate_token, token_required
 from core.shift_manager import ShiftManager
 from core.leave_manager import LeaveManager
+from core.salary_manager import SalaryManager
+from core.report_manager import ReportManager
 
 app = Flask(__name__)
 # Allow Authorization header for JWT
 CORS(app, resources={r"/api/*": {"origins": "*"}}, supports_credentials=True, expose_headers=["Authorization"], allow_headers=["Authorization", "Content-Type"])
+
+# Cấu hình Swagger
+swagger_config = {
+    "headers": [],
+    "specs": [
+        {
+            "endpoint": 'apispec',
+            "route": '/apispec.json',
+            "rule_filter": lambda rule: True,
+            "model_filter": lambda tag: True,
+        }
+    ],
+    "static_url_path": "/flasgger_static",
+    "swagger_ui": True,
+    "specs_route": "/api-docs/"
+}
+
+swagger_template = {
+    "swagger": "2.0",
+    "info": {
+        "title": "HRM Face Recognition API",
+        "description": "API Documentation for HRM System with Face Recognition & Payroll Management",
+        "version": "1.0.0",
+        "contact": {
+            "name": "SGU Capstone Project",
+            "email": "admin@hrm.system"
+        }
+    },
+    "host": "localhost:5000",
+    "basePath": "/",
+    "schemes": ["http"],
+    "securityDefinitions": {
+        "Bearer": {
+            "type": "apiKey",
+            "name": "Authorization",
+            "in": "header",
+            "description": "JWT Authorization header using the Bearer scheme. Example: 'Bearer {token}'"
+        }
+    },
+    "tags": [
+        {"name": "Authentication", "description": "API đăng nhập & quản lý profile"},
+        {"name": "Employees", "description": "Quản lý nhân viên (Admin only)"},
+        {"name": "Attendance", "description": "Chấm công bằng Face Recognition"},
+        {"name": "Face Setup", "description": "Đăng ký khuôn mặt 3 góc"},
+        {"name": "Shifts", "description": "Quản lý ca làm việc"},
+        {"name": "Leave Management", "description": "Quản lý nghỉ phép"},
+        {"name": "Payroll", "description": "Tính lương & quản lý bảng lương"},
+        {"name": "Reports", "description": "Báo cáo & thống kê"}
+    ]
+}
+
+swagger = Swagger(app, config=swagger_config, template=swagger_template)
 
 @app.errorhandler(500)
 def internal_server_error(e):
@@ -38,6 +93,44 @@ db.init_app(app)
 
 # Khởi tạo AI Engine
 ai_engine = AIEngine()
+
+# ==========================================
+# ROOT ENDPOINT & API INFO
+# ==========================================
+
+@app.route('/')
+def index():
+    """
+    Root endpoint - API Information
+    ---
+    tags:
+      - Info
+    responses:
+      200:
+        description: API information and links
+    """
+    return jsonify({
+        "message": "🎉 HRM Face Recognition API",
+        "version": "1.0.0",
+        "status": "running",
+        "documentation": {
+            "swagger_ui": "http://localhost:5000/api-docs/",
+            "api_spec": "http://localhost:5000/apispec.json"
+        },
+        "endpoints": {
+            "authentication": "/api/auth/login",
+            "employees": "/api/employees",
+            "attendance": "/api/checkin",
+            "shifts": "/api/shifts",
+            "leaves": "/api/leaves",
+            "payroll": "/api/payroll",
+            "reports": "/api/stats"
+        },
+        "default_credentials": {
+            "username": "admin",
+            "password": "Admin@123"
+        }
+    })
 
 # ==========================================
 # 4. API LEAVE MANAGEMENT
@@ -82,6 +175,41 @@ def create_leave_request(current_user):
 @app.route('/api/leaves', methods=['GET'])
 @token_required()
 def get_leave_requests(current_user):
+    """
+    Lấy danh sách đơn nghỉ phép
+    ---
+    tags:
+      - Leave Management
+    security:
+      - Bearer: []
+    parameters:
+      - name: scope
+        in: query
+        type: string
+        enum: [me, all]
+        default: me
+        description: 'me: Xem của mình, all: Xem tất cả (Admin only)'
+    responses:
+      200:
+        description: Danh sách đơn nghỉ phép
+        schema:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+              user_name:
+                type: string
+              leave_type:
+                type: string
+              start_date:
+                type: string
+              end_date:
+                type: string
+              status:
+                type: string
+    """
     scope = request.args.get("scope", "me")
     
     if scope == "all" and current_user.role == UserRole.ADMIN:
@@ -146,6 +274,42 @@ def update_leave_request(current_user, id):
 
 @app.route('/api/auth/login', methods=['POST'])
 def login():
+    """
+    Đăng nhập vào hệ thống
+    ---
+    tags:
+      - Authentication
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          required:
+            - username
+            - password
+          properties:
+            username:
+              type: string
+              example: admin
+            password:
+              type: string
+              example: Admin@123
+    responses:
+      200:
+        description: Đăng nhập thành công
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            token:
+              type: string
+            user:
+              type: object
+      401:
+        description: Sai username hoặc password
+    """
     data = request.json
     username = data.get('username')
     password = data.get('password')
@@ -191,6 +355,61 @@ def update_profile(current_user):
 @app.route('/api/employees', methods=['POST'])
 @token_required(roles=['admin'])
 def create_employee(current_user):
+    """
+    Thêm nhân viên mới (Admin only)
+    ---
+    tags:
+      - Employees
+    security:
+      - Bearer: []
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          required:
+            - username
+            - password
+            - name
+          properties:
+            username:
+              type: string
+              example: employee01
+            password:
+              type: string
+              example: Pass@123
+            name:
+              type: string
+              example: Nguyễn Văn A
+            email:
+              type: string
+              example: nva@company.com
+            phone:
+              type: string
+              example: "0123456789"
+            dob:
+              type: string
+              example: "1990-01-01"
+            role:
+              type: string
+              enum: [admin, employee]
+              example: employee
+            shift_id:
+              type: integer
+              example: 1
+            base_salary:
+              type: number
+              example: 10000000
+            image:
+              type: string
+              description: Base64 encoded image (optional)
+    responses:
+      200:
+        description: Thêm thành công
+      400:
+        description: Lỗi validate hoặc username đã tồn tại
+    """
     data = request.json
     
     # 1. Validate trùng username
@@ -229,7 +448,8 @@ def create_employee(current_user):
         dob=data.get('dob'),
         role=role_enum, 
         face_encoding=encodings_to_save,
-        shift_id=int(data.get('shift_id')) if data.get('shift_id') else None
+        shift_id=int(data.get('shift_id')) if data.get('shift_id') else None,
+        base_salary=float(data.get('base_salary', 0.0))
     )
     db.session.add(new_user)
     db.session.commit()
@@ -250,6 +470,10 @@ def update_employee(current_user, id):
     user.email = data.get('email', user.email)
     user.phone = data.get('phone', user.phone)
     user.dob = data.get('dob', user.dob)
+    
+    # Update base_salary if provided
+    if data.get('base_salary') is not None:
+        user.base_salary = float(data.get('base_salary'))
     
     if data.get('role'):
         try:
@@ -302,6 +526,38 @@ def delete_employee(current_user, id):
 @app.route('/api/employees', methods=['GET'])
 @token_required(roles=['admin'])
 def get_employees(current_user):
+    """
+    Lấy danh sách nhân viên (Admin only)
+    ---
+    tags:
+      - Employees
+    security:
+      - Bearer: []
+    responses:
+      200:
+        description: Danh sách nhân viên
+        schema:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+              username:
+                type: string
+              name:
+                type: string
+              role:
+                type: string
+              email:
+                type: string
+              base_salary:
+                type: number
+      401:
+        description: Chưa đăng nhập hoặc token hết hạn
+      403:
+        description: Không có quyền truy cập
+    """
     users = User.query.all()
     # User.to_dict() automatically handles face_image boolean logic now
     return jsonify([u.to_dict() for u in users])
@@ -320,6 +576,44 @@ def get_employee_by_id(current_user, id):
 
 @app.route('/api/checkin', methods=['POST'])
 def checkin():
+    """
+    Chấm công bằng Face Recognition
+    ---
+    tags:
+      - Attendance
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          required:
+            - image
+          properties:
+            image:
+              type: string
+              description: Base64 encoded image của khuôn mặt
+              example: data:image/jpeg;base64,/9j/4AAQSkZJRg...
+    responses:
+      200:
+        description: Chấm công thành công (Check-in hoặc Check-out)
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            type:
+              type: string
+              enum: [CHECK_IN, CHECK_OUT]
+            name:
+              type: string
+            status:
+              type: string
+            message:
+              type: string
+      400:
+        description: Không nhận diện được khuôn mặt
+    """
     data = request.json
     img = AIEngine.base64_to_image(data.get('image'))
     
@@ -489,20 +783,84 @@ def finish_face_setup(current_user):
 # ==========================================
 
 @app.route('/api/stats', methods=['GET'])
-def get_stats():
-    total_users = User.query.count()
-    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    logs_today = Attendance.query.filter(Attendance.checkin_time >= today_start).all()
+@token_required()
+def get_stats(current_user):
+    """
+    Thống kê tổng quan cho Dashboard (Cần auth)
+    ---
+    tags:
+      - Reports
+    security:
+      - Bearer: []
+    parameters:
+      - name: start_date
+        in: query
+        type: string
+        format: date
+        description: Ngày bắt đầu (YYYY-MM-DD) - Optional
+        example: "2026-02-01"
+      - name: end_date
+        in: query
+        type: string
+        format: date
+        description: Ngày kết thúc (YYYY-MM-DD) - Optional
+        example: "2026-02-28"
+    responses:
+      200:
+        description: Thống kê đầy đủ với tỷ lệ đi muộn
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            overview:
+              type: object
+              properties:
+                total_employees:
+                  type: integer
+                total_shifts:
+                  type: integer
+                pending_leaves:
+                  type: integer
+            attendance_today:
+              type: object
+              properties:
+                present:
+                  type: integer
+                late:
+                  type: integer
+                absent:
+                  type: integer
+                on_leave:
+                  type: integer
+                late_rate_percent:
+                  type: number
+                  description: Tỷ lệ đi muộn (%)
+            period_summary:
+              type: object
+              description: Thống kê theo khoảng thời gian (nếu có filter)
+      401:
+        description: Chưa đăng nhập
+    """
+    start_date_str = request.args.get('start_date')
+    end_date_str = request.args.get('end_date')
     
-    present_count = len(set([l.user_id for l in logs_today]))
-    late_count = len([l for l in logs_today if l.status == AttendanceStatus.LATE])
+    start_date = None
+    end_date = None
     
-    return jsonify({
-        "total_employees": total_users,
-        "present_today": present_count,
-        "late_today": late_count,
-        "absent": total_users - present_count
-    })
+    # Parse dates if provided
+    try:
+        if start_date_str:
+            start_date = datetime.strptime(start_date_str, "%Y-%m-%d")
+        if end_date_str:
+            end_date = datetime.strptime(end_date_str, "%Y-%m-%d")
+            end_date = end_date.replace(hour=23, minute=59, second=59)
+    except ValueError:
+        return jsonify({"success": False, "message": "Định dạng ngày không hợp lệ (YYYY-MM-DD)"}), 400
+    
+    # Generate stats using ReportManager
+    stats = ReportManager.generate_dashboard_stats(start_date, end_date)
+    return jsonify(stats)
 
 @app.route('/api/stats/top-late', methods=['GET'])
 @token_required(roles=['admin'])
@@ -583,6 +941,30 @@ def get_logs():
 
 @app.route('/api/shifts', methods=['GET'])
 def get_shifts():
+    """
+    Lấy danh sách ca làm việc
+    ---
+    tags:
+      - Shifts
+    responses:
+      200:
+        description: Danh sách ca làm việc
+        schema:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+              name:
+                type: string
+              start_time:
+                type: string
+              end_time:
+                type: string
+              grace_period_minutes:
+                type: integer
+    """
     shifts = Shift.query.all()
     return jsonify([{
         "id": s.id, 
@@ -626,8 +1008,93 @@ def update_shift(current_user, id):
     db.session.commit()
     return jsonify({"success": True, "message": "Cập nhật thành công"})
 
+@app.route('/api/attendance/export', methods=['GET'])
+@token_required(roles=['admin'])
+def export_attendance(current_user):
+    """
+    Export dữ liệu chấm công ra Excel với Summary (Admin only)
+    ---
+    tags:
+      - Reports
+    security:
+      - Bearer: []
+    parameters:
+      - name: start
+        in: query
+        type: string
+        format: date
+        description: Ngày bắt đầu (YYYY-MM-DD) - Optional
+        example: "2026-02-01"
+      - name: end
+        in: query
+        type: string
+        format: date
+        description: Ngày kết thúc (YYYY-MM-DD) - Optional
+        example: "2026-02-28"
+      - name: user_id
+        in: query
+        type: integer
+        description: Lọc theo nhân viên cụ thể - Optional
+        example: 1
+    responses:
+      200:
+        description: File Excel với 3 sheets (Tổng Quan, Chi Tiết, Thống Kê Theo NV)
+        content:
+          application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+            schema:
+              type: string
+              format: binary
+      400:
+        description: Định dạng ngày không hợp lệ
+      403:
+        description: Không có quyền truy cập (Admin only)
+    """
+    start_str = request.args.get('start')
+    end_str = request.args.get('end')
+    user_id = request.args.get('user_id', type=int)
+    
+    start_date = None
+    end_date = None
+    
+    # Parse dates
+    try:
+        if start_str:
+            start_date = datetime.strptime(start_str, "%Y-%m-%d")
+        if end_str:
+            end_date = datetime.strptime(end_str, "%Y-%m-%d")
+            end_date = end_date.replace(hour=23, minute=59, second=59)
+    except ValueError:
+        return jsonify({"success": False, "message": "Định dạng ngày không hợp lệ (YYYY-MM-DD)"}), 400
+    
+    # Generate Excel using ReportManager
+    try:
+        output = ReportManager.export_attendance_to_excel(start_date, end_date, user_id)
+        
+        # Generate filename
+        filename = f"BaoCaoChamCong_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        
+        return send_file(
+            output,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            as_attachment=True,
+            download_name=filename
+        )
+    except Exception as e:
+        return jsonify({"success": False, "message": f"Lỗi xuất Excel: {str(e)}"}), 500
+
 @app.route('/api/export_excel', methods=['GET'])
 def export_excel():
+    """
+    [DEPRECATED] Sử dụng /api/attendance/export thay thế
+    Export tất cả dữ liệu chấm công (không có filter)
+    ---
+    tags:
+      - Reports
+    deprecated: true
+    responses:
+      200:
+        description: File Excel đơn giản
+    """
     logs = Attendance.query.all()
     data = []
     for l in logs:
@@ -652,6 +1119,212 @@ def export_excel():
         as_attachment=True, 
         download_name='BaoCaoChamCong.xlsx'
     )
+
+# ==========================================
+# 5. API PAYROLL (TÍNH LƯƠNG)
+# ==========================================
+
+@app.route('/api/payroll/calculate', methods=['GET'])
+@token_required(roles=['admin'])
+def calculate_payroll_all(current_user):
+    """
+    Tính lương cho tất cả nhân viên (Admin only)
+    ---
+    tags:
+      - Payroll
+    security:
+      - Bearer: []
+    parameters:
+      - name: month
+        in: query
+        type: integer
+        required: false
+        description: Tháng (1-12)
+        example: 2
+      - name: year
+        in: query
+        type: integer
+        required: false
+        description: Năm
+        example: 2026
+    responses:
+      200:
+        description: Kết quả tính lương
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            data:
+              type: array
+              items:
+                type: object
+                properties:
+                  user_id:
+                    type: integer
+                  user_name:
+                    type: string
+                  base_salary:
+                    type: number
+                  total_workdays:
+                    type: integer
+                  late_count:
+                    type: integer
+                  penalty_per_late:
+                    type: number
+                  bonus:
+                    type: number
+                  gross_salary:
+                    type: number
+                  total_penalty:
+                    type: number
+                  net_salary:
+                    type: number
+                  year_workdays:
+                    type: integer
+      400:
+        description: Tháng/năm không hợp lệ
+    """
+    """
+    Tính lương cho tất cả nhân viên trong tháng (chưa lưu DB)
+    Query params: month, year
+    """
+    try:
+        month = int(request.args.get('month', datetime.now().month))
+        year = int(request.args.get('year', datetime.now().year))
+    except ValueError:
+        return jsonify({"success": False, "message": "Tháng/Năm không hợp lệ"}), 400
+    
+    if not (1 <= month <= 12):
+        return jsonify({"success": False, "message": "Tháng phải từ 1-12"}), 400
+    
+    results = SalaryManager.calculate_salary_for_all(month, year)
+    return jsonify({"success": True, "data": results})
+
+@app.route('/api/payroll/calculate/me', methods=['GET'])
+@token_required()
+def calculate_payroll_me(current_user):
+    """
+    Nhân viên tính lương của mình trong tháng
+    Query params: month, year
+    """
+    try:
+        month = int(request.args.get('month', datetime.now().month))
+        year = int(request.args.get('year', datetime.now().year))
+    except ValueError:
+        return jsonify({"success": False, "message": "Tháng/Năm không hợp lệ"}), 400
+    
+    result = SalaryManager.calculate_salary_for_user(current_user.id, month, year)
+    if result:
+        return jsonify({"success": True, "data": result})
+    else:
+        return jsonify({"success": False, "message": "Không tìm thấy dữ liệu"}), 404
+
+@app.route('/api/payroll/confirm', methods=['POST'])
+@token_required(roles=['admin'])
+def confirm_payroll(current_user):
+    """
+    Confirm và lưu lương vào DB (Admin only)
+    ---
+    tags:
+      - Payroll
+    security:
+      - Bearer: []
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          required:
+            - user_id
+            - month
+            - year
+          properties:
+            user_id:
+              type: integer
+              example: 1
+            month:
+              type: integer
+              example: 2
+            year:
+              type: integer
+              example: 2026
+            base_salary:
+              type: number
+              description: Có thể override
+              example: 10000000
+            total_workdays:
+              type: integer
+              description: Có thể override
+              example: 22
+            late_count:
+              type: integer
+              description: Có thể override
+              example: 3
+            penalty_per_late:
+              type: number
+              description: Có thể override
+              example: 50000
+            bonus:
+              type: number
+              description: Có thể override
+              example: 5000000
+            notes:
+              type: string
+              example: Thưởng thêm vì hoàn thành dự án
+    responses:
+      200:
+        description: Confirm thành công
+      400:
+        description: Lỗi validate hoặc đã confirm trước đó
+    """
+    """
+    Admin confirm và lưu lương vào bảng Payroll
+    Body: {
+        "user_id": int,
+        "month": int,
+        "year": int,
+        "base_salary": float,  (có thể override)
+        "total_workdays": int,  (có thể override)
+        "late_count": int,      (có thể override)
+        "penalty_per_late": float,  (có thể override)
+        "bonus": float,         (có thể override)
+        "notes": str (optional)
+    }
+    """
+    data = request.json
+    
+    success, message, payroll_id = SalaryManager.confirm_payroll(data, current_user.id)
+    
+    if success:
+        return jsonify({
+            "success": True, 
+            "message": message,
+            "payroll_id": payroll_id
+        })
+    else:
+        return jsonify({"success": False, "message": message}), 400
+
+@app.route('/api/payroll/history', methods=['GET'])
+@token_required()
+def get_payroll_history(current_user):
+    """
+    Lấy lịch sử lương đã confirm
+    - Admin: Xem tất cả (hoặc filter theo user_id, month, year)
+    - Employee: Chỉ xem của mình
+    Query params: month, year, user_id (admin only)
+    """
+    month = request.args.get('month', type=int)
+    year = request.args.get('year', type=int)
+    user_id = request.args.get('user_id', type=int)
+    
+    # Authorization: Employee chỉ xem của mình
+    if current_user.role != UserRole.ADMIN:
+        user_id = current_user.id
+    
+    results = SalaryManager.get_payroll_history(user_id=user_id, month=month, year=year)
+    return jsonify({"success": True, "data": results})
 
 if __name__ == '__main__':
     with app.app_context():
