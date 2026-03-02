@@ -56,6 +56,11 @@ class User(db.Model):
     
     face_encoding = db.Column(db.PickleType, nullable=True) 
     
+    # 4. Quản lý tài khoản
+    is_active = db.Column(db.Boolean, default=True, nullable=False)
+    change_password_request = db.Column(db.Boolean, default=False, nullable=False)
+    must_change_password = db.Column(db.Boolean, default=False, nullable=False)
+    
     # Foreign Key & Relationship
     shift_id = db.Column(db.Integer, db.ForeignKey('shift.id'), nullable=True)
     shift = db.relationship('Shift', backref='users')
@@ -74,7 +79,10 @@ class User(db.Model):
             "dob": self.dob,
             "shift_id": self.shift_id,
             "shift_name": self.shift.name if self.shift else "-",
-            "face_image": True if self.face_encoding is not None else False
+            "face_image": True if self.face_encoding is not None else False,
+            "is_active": self.is_active,
+            "change_password_request": self.change_password_request,
+            "must_change_password": self.must_change_password
         }
 
 class Attendance(db.Model):

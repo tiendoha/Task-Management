@@ -67,7 +67,10 @@ Logic "Smart Shift" tự động xác định ca dựa trên giờ Check-in.
       "dob": "1990-01-01",
       "shift": "Ca Sáng",
       "shift_id": 1,
-      "face_image": true
+      "face_image": true,
+      "is_active": true,
+      "change_password_request": false,
+      "must_change_password": false
     }
   ]
   ```
@@ -87,7 +90,10 @@ Logic "Smart Shift" tự động xác định ca dựa trên giờ Check-in.
       "dob": "...",
       "shift": "Ca Sáng",
       "shift_id": 1,
-      "face_image": true
+      "face_image": true,
+      "is_active": true,
+      "change_password_request": false,
+      "must_change_password": false
   }
   ```
 
@@ -105,7 +111,8 @@ Logic "Smart Shift" tự động xác định ca dựa trên giờ Check-in.
       "shift_id": 2,
       "password": "new_password",        // Optional (Requires oldPassword)
       "oldPassword": "current_password", // Required if changing password
-      "image": "data:image/jpeg;base64,..." // Optional (Updates FaceID)
+      "image": "data:image/jpeg;base64,...", // Optional (Updates FaceID)
+      "is_active": false                 // Optional (Lock/Unlock Account)
   }
   ```
 - **Response**: `{ "success": true, "message": "Cập nhật thành công!" }`
@@ -226,3 +233,35 @@ Trong quá trình phát triển tính năng này, tôi đã gặp và xử lý c
 - **Cơ chế**: AI tích hợp Fasnet. Khi quét ảnh từ API `/api/checkin` hoặc `/api/face-setup/analyze`, thuật toán tiến hành bóc tách khuôn mặt và đánh giá tính thực (`is_real`).
 - **Xử lý góc nghiêng WebCam**: Để tránh việc camera thấp dìm góc mặt bị Anti-Spoofing dập nhầm (báo là ảnh giả), hệ thống tự động chèn option `align=True` vào lõi phân tích `get_embedding`. Thuật toán sẽ xoay trục ngang 2 mắt cân bằng trước khi scan mức liveness.
 - **Quy trình hoạt động**: Dân văn phòng/Nhân sự không thể cầm điện thoại chiếu vào màn hình, hoặc cầm ảnh thẻ giơ lên máy chấm công. AI phát hiện và ném văng token, reject API với thông báo: `Spoofing detected: Phát hiện hình ảnh giả mạo!`.
+
+---
+
+## 8. Account & Password Management (Mới)
+
+Hệ thống cho phép Quản trị viên vô hiệu hóa tài khoản và hỗ trợ luồng Cấp/Đổi lại mật khẩu (Forgot Password) có bảo mật cao bằng Gmail SMTP.
+
+### 8.1. Account Locking (Khóa tài khoản)
+- **Endpoint**: Sửa field thông qua `PUT /api/employees/<id>`
+- **Logic**: Khi Admin gọi API update truyền vào `"is_active": false`, User đó sẽ ngay lập tức bị văng lỗi cấp HTTP 403 `Tài khoản của bạn đang bị khóa` ở mọi điểm truy cập (bao gồm cả Log In lẫn Check-in API).
+
+### 8.2. Yêu cầu Cấp lại Mật Khẩu
+- **Endpoint**: `POST /api/reset-password-request`
+- **Public**: Yes (Không cần Token)
+- **Body**: `{ "username": "...", "email": "..." }`
+- **Response**: Trả về 200 OK và đánh cờ `change_password_request = True` trong database chờ Admin phê duyệt.
+
+### 8.3. Admin Cấp lại Mật khẩu (Reset)
+- **Endpoint**: `PUT /api/reset-password/<user_id>`
+- **Header**: `Authorization: Bearer <admin_token>`
+- **Logic**: 
+  - Tạo ngẫu nhiên chuỗi mật khẩu mạnh 10 ký tự (Kèm ký tự đặc biệt).
+  - Cập nhật Database, bật cờ `must_change_password = True`.
+  - Gửi Email tự động chứa mật khẩu đến địa chỉ email của User.
+- **Response**: Trả về 200 OK thông báo Email đã bay.
+
+### 8.4. Bắt buộc Đổi Mật Khẩu (Force Change)
+- **Endpoint**: `PUT /api/change-password`
+- **Header**: `Authorization: Bearer <user_token>` (User đăng nhập bằng Pass tạm thời)
+- **Logic**: User BỊ BẮT BUỘC gọi API này để update sang Password mới vĩnh viễn (Tối thiểu 6 ký tự). Admin/Backend chặn mọi nỗ lực call API khác nếu cờ `must_change_password` vẫn đỏ.
+- **Body**: `{ "new_password": "NewSecret@123" }`
+- **Response**: 200 OK, tắt cờ bắt buộc đổi pass. User bắt buộc phải Login lại.

@@ -14,8 +14,10 @@ from core.ai_engine import AIEngine
 from core.security import hash_password, verify_password, generate_token, token_required
 from core.shift_manager import ShiftManager
 from core.leave_manager import LeaveManager
+from utils.mail_service import init_mail
 
 app = Flask(__name__)
+init_mail(app)
 # Allow Authorization header for JWT
 CORS(app, resources={r"/api/*": {"origins": "*"}}, supports_credentials=True, expose_headers=["Authorization"], allow_headers=["Authorization", "Content-Type"])
 
@@ -159,6 +161,10 @@ def login():
     if not user or not user.password_hash or not verify_password(user.password_hash, password):
         return jsonify({"success": False, "message": "Tên đăng nhập hoặc mật khẩu không đúng"}), 401
 
+    # Check if user is active
+    if not user.is_active:
+        return jsonify({"success": False, "message": "Tài khoản của bạn đang bị khóa. Vui lòng liên hệ Admin."}), 403
+
     token = generate_token(user.id, user.role.value)
     return jsonify({
         "success": True,
@@ -250,6 +256,9 @@ def update_employee(current_user, id):
     user.email = data.get('email', user.email)
     user.phone = data.get('phone', user.phone)
     user.dob = data.get('dob', user.dob)
+    
+    if 'is_active' in data:
+        user.is_active = bool(data.get('is_active'))
     
     if data.get('role'):
         try:
@@ -652,6 +661,66 @@ def export_excel():
         as_attachment=True, 
         download_name='BaoCaoChamCong.xlsx'
     )
+
+# ==========================================
+# 5. PASSWORD MANAGEMENT APIs
+# ==========================================
+
+from utils.password_utils import generate_random_password
+from utils.mail_service import send_reset_email
+
+@app.route('/api/reset-password-request', methods=['POST'])
+def reset_password_request():
+    data = request.json
+    username = data.get('username')
+    email = data.get('email')
+    
+    if not username or not email:
+        return jsonify({"success": False, "message": "Vui lòng cung cấp Username và Email"}), 400
+        
+    user = User.query.filter_by(username=username, email=email).first()
+    if not user:
+        return jsonify({"success": False, "message": "Thông tin không khớp. Không thể yêu cầu cấp lại mật khẩu."}), 404
+        
+    user.change_password_request = True
+    db.session.commit()
+    return jsonify({"success": True, "message": "Yêu cầu cấp lại mật khẩu đã được gửi đến Admin"})
+
+@app.route('/api/reset-password/<int:user_id>', methods=['PUT'])
+@token_required(roles=['admin'])
+def reset_password(current_user, user_id):
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({"success": False, "message": "Người dùng không tồn tại"}), 404
+        
+    new_pwd = generate_random_password(10)
+    user.password_hash = hash_password(new_pwd)
+    user.must_change_password = True
+    user.change_password_request = False
+    db.session.commit()
+    
+    send_reset_email(user.email, new_pwd)
+    
+    return jsonify({"success": True, "message": "Đã reset mật khẩu thành công. Email đã được gửi đến nhân viên."})
+
+@app.route('/api/change-password', methods=['PUT'])
+@token_required()
+def force_change_password(current_user):
+    # Critical security check
+    if not current_user.must_change_password:
+        return jsonify({"success": False, "message": "Bạn không có yêu cầu bắt buộc đổi mật khẩu lúc này."}), 403
+        
+    data = request.json
+    new_password = data.get('new_password')
+    
+    if not new_password or len(new_password) < 6:
+        return jsonify({"success": False, "message": "Mật khẩu mới phải có ít nhất 6 ký tự."}), 400
+        
+    current_user.password_hash = hash_password(new_password)
+    current_user.must_change_password = False
+    db.session.commit()
+    
+    return jsonify({"success": True, "message": "Đã đổi mật khẩu thành công. Vui lòng đăng nhập lại."})
 
 if __name__ == '__main__':
     with app.app_context():
