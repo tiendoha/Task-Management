@@ -8,11 +8,14 @@ Flask
 Flask-SQLAlchemy
 Flask-Cors
 opencv-python
+flasgger
 
 PyJWT
 werkzeug
 protobuf<4.0.0
 numpy<2.0.0
 torch
+pandas
+openpyxl
 
 Flask-Mail==0.9.1

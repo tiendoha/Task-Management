@@ -259,6 +259,7 @@ def update_employee(current_user, id):
     
     if 'is_active' in data:
         user.is_active = bool(data.get('is_active'))
+        
     
     if data.get('role'):
         try:
