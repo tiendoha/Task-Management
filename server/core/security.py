@@ -51,6 +51,10 @@ def token_required(roles=None):
                 if not current_user:
                     return jsonify({"message": "User not found!"}), 401
                 
+                # Check if account is locked
+                if not current_user.is_active:
+                    return jsonify({"success": False, "message": "Tài khoản của bạn đã bị khóa."}), 403
+                
                 # 3. Check quyền (Authorization)
                 # roles is passed to the outer decorator.
                 # If roles is provided, check if user_role in keys

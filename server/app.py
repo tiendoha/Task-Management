@@ -258,7 +258,14 @@ def update_employee(current_user, id):
     user.dob = data.get('dob', user.dob)
     
     if 'is_active' in data:
-        user.is_active = bool(data.get('is_active'))
+        # Safe boolean parsing
+        new_active_status = bool(str(data.get('is_active')).lower() == 'true')
+        
+        # Self-lockout prevention
+        if id == current_user.id and not new_active_status:
+            return jsonify({"success": False, "message": "Không thể tự khóa tài khoản của chính mình!"}), 400
+            
+        user.is_active = new_active_status
         
     
     if data.get('role'):
