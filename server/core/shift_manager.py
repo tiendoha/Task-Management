@@ -49,11 +49,6 @@ class ShiftManager:
             
         try:
             shift_start = datetime.strptime(shift.start_time, "%H:%M:%S")
-            # Ghép ngày hiện tại vào giờ của Shift để so sánh
-            shift_start_dt = checkin_time.replace(hour=shift_start.hour, minute=shift_start.minute, second=start.second if hasattr(shift_start, 'second') else 0)
-            
-            # Use strict HH:MM:SS parsing from above, so shift_start has all components.
-            # But just to be safe with replace logic:
             shift_start_dt = checkin_time.replace(
                 hour=shift_start.hour, 
                 minute=shift_start.minute, 
@@ -61,13 +56,15 @@ class ShiftManager:
                 microsecond=0
             )
             
-            # Thêm thời gian ân hạn (Grace Period)
-            allowed_late_time = shift_start_dt + timedelta(minutes=shift.grace_period_minutes)
+            start_window = shift_start_dt - timedelta(minutes=15)
             
-            if checkin_time > allowed_late_time:
+            if start_window <= checkin_time <= shift_start_dt:
+                return AttendanceStatus.ON_TIME
+            elif checkin_time > shift_start_dt:
                 return AttendanceStatus.LATE
             else:
-                return AttendanceStatus.ON_TIME
+                return AttendanceStatus.ON_TIME # Fallback if checking in way too early
+                
         except Exception as e:
             print(f"Error calculating status: {e}")
             return AttendanceStatus.ON_TIME # Fallback logic

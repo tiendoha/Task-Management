@@ -15,6 +15,7 @@ from core.security import hash_password, verify_password, generate_token, token_
 from core.shift_manager import ShiftManager
 from core.leave_manager import LeaveManager
 from utils.mail_service import init_mail
+from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
 init_mail(app)
@@ -385,6 +386,29 @@ def checkin():
 
             # Handle Check-out
             attendance.checkout_time = now
+            
+            # Check-out strict evaluation rules
+            if attendance.shift_id:
+                try:
+                    shift = Shift.query.get(attendance.shift_id)
+                    end_time_obj = datetime.strptime(shift.end_time, "%H:%M:%S")
+                    end_dt = now.replace(
+                        hour=end_time_obj.hour, 
+                        minute=end_time_obj.minute, 
+                        second=end_time_obj.second, 
+                        microsecond=0
+                    )
+                    
+                    if now < end_dt - timedelta(minutes=5):
+                        attendance.status = AttendanceStatus.EARLY_LEAVE
+                    elif now > end_dt + timedelta(minutes=10):
+                        attendance.status = AttendanceStatus.OVERTIME
+                        # Calculate overtime in minutes
+                        attendance.overtime_minutes = int((now - (end_dt + timedelta(minutes=10))).total_seconds() // 60)
+                    # Else: KEEP existing status (ON_TIME or LATE)
+                except Exception as e:
+                    print(f"Error evaluating checkout status: {e}")
+            
             db.session.commit()
             
             return jsonify({
@@ -733,32 +757,75 @@ def force_change_password(current_user):
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
-        
-        # Create Default Shift
-        if Shift.query.count() == 0:
-            s1 = Shift(name="Ca Sáng", start_time="08:00:00", end_time="12:00:00")
-            s2 = Shift(name="Ca Chiều", start_time="13:00:00", end_time="17:00:00")
-            db.session.add_all([s1, s2])
-            db.session.commit()
-
-        # Create Default Admin
-        if not User.query.filter_by(username='admin').first():
-            hashed_pw = hash_password('Admin@123')
+        # Tạo sẵn tài khoản config ban đầu nếu chưa có admin
+        admin = User.query.filter_by(username='admin').first()
+        if not admin:
+            from core.security import hash_password
+            from models.db_models import UserRole
             admin = User(
-                name="Administrator", 
-                username="admin", 
-                password_hash=hashed_pw, 
-                role=UserRole.ADMIN, 
-                shift_id=1,
-                email="admin@hrm.system",
-                phone="0000000000"
+                username='admin',
+                password_hash=hash_password('admin'),  # Default pass
+                name='Admin User',
+                role=UserRole.ADMIN
             )
             db.session.add(admin)
             db.session.commit()
-            print(">>> Init Admin: admin | Admin@123")
+            print("Đã tạo user Admin mặc định!")
 
-    # Warm-up AI Models before starting server
-    from core.ai_engine import AIEngine
-    AIEngine.warm_up_models()
+        # Import AI engine and warm up models once on startup
+        from core.ai_engine import AIEngine
+        AIEngine.warm_up_models()
+        
+    # --- APSCHEDULER: DAILY ATTENDANCE FINALIZATION ---
+    def finalize_daily_attendance():
+        with app.app_context():
+            print(f"[{datetime.now()}] Bắt đầu chạy Cron Job: Chốt công cuối ngày...")
+            today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            
+            # 1. Chốt đơn những người quên Check-out thành Vắng mặt
+            open_attendances = Attendance.query.filter(
+                Attendance.checkin_time >= today_start,
+                Attendance.checkout_time == None
+            ).all()
+            for record in open_attendances:
+                record.status = AttendanceStatus.ABSENT
+            
+            # 2. Quét những User không có record chấm công hoặc xin nghỉ hôm nay -> Vắng mặt
+            active_users = User.query.filter_by(is_active=True).all()
+            for user in active_users:
+                # Bỏ qua Admin
+                if user.role.value == 'admin': continue
+                
+                # Cẩn thận: Có xin nghỉ không?
+                leave = LeaveRequest.query.filter(
+                    LeaveRequest.user_id == user.id,
+                    LeaveRequest.status == LeaveStatus.APPROVED,
+                    LeaveRequest.start_date <= datetime.now(),
+                    LeaveRequest.end_date >= today_start
+                ).first()
+                if leave: continue
+                
+                # Có chấm công không?
+                att = Attendance.query.filter(
+                    Attendance.user_id == user.id,
+                    Attendance.checkin_time >= today_start
+                ).first()
+                
+                if not att:
+                    # Tạo record vắng mặt
+                    new_absent = Attendance(
+                        user_id=user.id,
+                        checkin_time=datetime.now().replace(hour=8, minute=0, second=0), # Dummy checkin cho người vắng
+                        checkout_time=datetime.now().replace(hour=17, minute=0, second=0), # Dummy checkout
+                        status=AttendanceStatus.ABSENT
+                    )
+                    db.session.add(new_absent)
+                    
+            db.session.commit()
+            print(f"[{datetime.now()}] Hoàn tất Cron Job Chốt Công!")
 
-    app.run(debug=True, port=5000)
+    scheduler = BackgroundScheduler(timezone="Asia/Ho_Chi_Minh")
+    scheduler.add_job(func=finalize_daily_attendance, trigger="cron", hour=23, minute=59)
+    scheduler.start()
+
+    app.run(debug=True, use_reloader=False, port=5000)

@@ -18,6 +18,7 @@ class AttendanceStatus(enum.Enum):
     EARLY_LEAVE = "early"     # Về sớm
     OVERTIME = "overtime"     # Ngoài giờ (Không thuộc ca nào)
     ON_LEAVE = "on_leave"     # Nghỉ phép
+    ABSENT = "absent"         # Vắng mặt
 
 class LeaveStatus(enum.Enum):
     PENDING = "pending"
@@ -97,6 +98,9 @@ class Attendance(db.Model):
     
     # 3. Lưu trạng thái
     status = db.Column(SQLAlchemyEnum(AttendanceStatus), default=AttendanceStatus.ON_TIME)
+    
+    # 4. Lưu OTP/Tính thêm giờ
+    overtime_minutes = db.Column(db.Integer, default=0)
     
     # Relationships
     shift = db.relationship('Shift', backref='attendances')
