@@ -15,31 +15,32 @@ class ShiftManager:
         now = current_time_obj.time()
         
         for shift in all_shifts:
-            # Chuyển string DB thành object time để so sánh
-            # DB format expected: "HH:MM:SS"
             try:
                 shift_start = datetime.strptime(shift.start_time, "%H:%M:%S").time()
                 shift_end = datetime.strptime(shift.end_time, "%H:%M:%S").time()
                 
-                # Check buffer period (30 mins before)
-                # Need to do date math, so use a dummy date
-                dummy_date = datetime(2000, 1, 1) # Arbitrary date
-                start_dt = dummy_date.replace(hour=shift_start.hour, minute=shift_start.minute, second=shift_start.second)
-                end_dt = dummy_date.replace(hour=shift_end.hour, minute=shift_end.minute, second=shift_end.second)
+                # Retrieve literal current date bounds
+                base_date = current_time_obj.date()
+                start_dt = datetime.combine(base_date, shift_start)
+                end_dt = datetime.combine(base_date, shift_end)
                 
-                start_buffer_dt = start_dt - timedelta(minutes=30)
+                if shift_end <= shift_start:
+                    # Night shift definition (e.g., 22:00 - 06:00)
+                    # Nếu giờ hiện tại < 12h trưa, ngầm hiểu là Ca đêm của ngày hôm qua vắt sang
+                    if current_time_obj.time() < datetime.strptime("12:00:00", "%H:%M:%S").time():
+                        start_dt -= timedelta(days=1)
+                    else:
+                        end_dt += timedelta(days=1)
                 
-                # Convert current time to dummy date for comparison
-                now_dt = dummy_date.replace(hour=now.hour, minute=now.minute, second=now.second)
-
-                # Logic: Is now within [Start - 30, End]?
-                if start_buffer_dt <= now_dt <= end_dt:
+                start_buffer_dt = start_dt - timedelta(minutes=60) # Tới sớm 1 tiếng
+                end_buffer_dt = end_dt + timedelta(minutes=60)     # Quẹt trễ lúc về 1 tiếng
+                
+                if start_buffer_dt <= current_time_obj <= end_buffer_dt:
                     return shift
             except ValueError:
-                # Handle cases where time format in DB might be wrong
                 continue
                  
-        return None # Không thuộc ca nào -> OT
+        return None
 
     @staticmethod
     def calculate_status(checkin_time, shift):

@@ -361,16 +361,34 @@ def checkin():
         user = matched_user
         now = datetime.now()
         
-        # 1. Tìm ca làm việc tự động
+        # Lấy thông tin ca làm việc (hiện tại hoặc sắp tới) dành cho Check-in
         matched_shift = ShiftManager.get_matching_shift(now)
+        today = now.date()
         
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        
-        # Check existing attendance
-        attendance = Attendance.query.filter(
-            Attendance.user_id == user.id,
-            Attendance.checkin_time >= today_start
+        # 1. Tìm record của hôm nay
+        attendance = Attendance.query.filter_by(
+            user_id=user.id,
+            work_date=today
         ).first()
+        
+        # 2. Khôi phục ca đêm từ hôm qua nếu chưa checkout
+        if not attendance:
+            yesterday = today - timedelta(days=1)
+            att_yesterday = Attendance.query.filter_by(
+                user_id=user.id,
+                work_date=yesterday
+            ).first()
+            
+            if att_yesterday and not att_yesterday.checkout_time and att_yesterday.shift_id:
+                shift_past = Shift.query.get(att_yesterday.shift_id)
+                if shift_past:
+                    start_time_obj = datetime.strptime(shift_past.start_time, "%H:%M:%S").time()
+                    end_time_obj = datetime.strptime(shift_past.end_time, "%H:%M:%S").time()
+                    # Xác nhận là Ca Đêm VÀ đang check-out vào ban ngày (trước giờ start ca)
+                    if end_time_obj <= start_time_obj and now.time() < start_time_obj:
+                        attendance = att_yesterday
+                        today = yesterday # Nhúng work_date về hôm qua để ghi Checkout
+
 
         if attendance:
              # SPAM PREVENTION
@@ -391,21 +409,23 @@ def checkin():
             if attendance.shift_id:
                 try:
                     shift = Shift.query.get(attendance.shift_id)
-                    end_time_obj = datetime.strptime(shift.end_time, "%H:%M:%S")
-                    end_dt = now.replace(
-                        hour=end_time_obj.hour, 
-                        minute=end_time_obj.minute, 
-                        second=end_time_obj.second, 
-                        microsecond=0
-                    )
+                    end_time_obj = datetime.strptime(shift.end_time, "%H:%M:%S").time()
+                    start_time_obj = datetime.strptime(shift.start_time, "%H:%M:%S").time()
                     
-                    if now < end_dt - timedelta(minutes=5):
-                        attendance.status = AttendanceStatus.EARLY_LEAVE
+                    # Logic ca đêm
+                    end_dt = datetime.combine(today, end_time_obj)
+                    if end_time_obj <= start_time_obj:
+                        end_dt += timedelta(days=1)
+                    
+                    if now < end_dt:
+                        attendance.early_leave_minutes = int((end_dt - now).total_seconds() // 60)
+                        attendance.overtime_minutes = 0
                     elif now > end_dt + timedelta(minutes=10):
-                        attendance.status = AttendanceStatus.OVERTIME
-                        # Calculate overtime in minutes
-                        attendance.overtime_minutes = int((now - (end_dt + timedelta(minutes=10))).total_seconds() // 60)
-                    # Else: KEEP existing status (ON_TIME or LATE)
+                        attendance.overtime_minutes = int((now - end_dt).total_seconds() // 60)
+                        attendance.early_leave_minutes = 0
+                    else:
+                        attendance.early_leave_minutes = 0
+                        attendance.overtime_minutes = 0
                 except Exception as e:
                     print(f"Error evaluating checkout status: {e}")
             
@@ -416,37 +436,45 @@ def checkin():
                 "type": "CHECK_OUT",
                 "name": user.name,
                 "status": "Đã về",
-                "message": "Check-out thành công!"
+                "message": f"Check-out thành công lúc {now.strftime('%H:%M:%S')}!"
             })
         else:
             # Handle Check-in
-            status = AttendanceStatus.ON_TIME
             shift_id = None
+            late_minutes = 0
             
             if matched_shift:
                 shift_id = matched_shift.id
-                status = ShiftManager.calculate_status(now, matched_shift)
-            else:
-                status = AttendanceStatus.OVERTIME
+                start_time_obj = datetime.strptime(matched_shift.start_time, "%H:%M:%S").time()
+                start_dt = datetime.combine(today, start_time_obj)
+                
+                # Tính Late Minutes (Bỏ qua grace period cũ vì requirement chỉ định "Grace period" là lấy từ object, nhưng logic cũ HR bỏ. 
+                # Dựa theo yêu cầu "Calculate late_minutes using grace_period_minutes":
+                grace = matched_shift.grace_period_minutes if hasattr(matched_shift, 'grace_period_minutes') else 0
+                allowed_time = start_dt + timedelta(minutes=grace)
+                
+                if now > allowed_time:
+                    late_minutes = int((now - start_dt).total_seconds() // 60)
                 
             new_attendance = Attendance(
                 user_id=user.id,
                 shift_id=shift_id,
+                work_date=today,
                 checkin_time=now,
-                status=status
+                status=AttendanceStatus.PRESENT,
+                late_minutes=late_minutes
             )
             db.session.add(new_attendance)
             db.session.commit()
             
-            status_vn = "Đúng giờ" if status == AttendanceStatus.ON_TIME else ("Đi muộn" if status == AttendanceStatus.LATE else "Ngoài giờ")
             shift_name = matched_shift.name if matched_shift else "Tăng ca"
 
             return jsonify({
                 "success": True,
                 "type": "CHECK_IN",
                 "name": user.name,
-                "status": status_vn,
-                "message": f"Check-in thành công ({status_vn}) - {shift_name}"
+                "status": "Có mặt",
+                "message": f"Check-in thành công ({'Muộn ' + str(late_minutes) + 'p' if late_minutes > 0 else 'Đúng giờ'}) - {shift_name}"
             })
 
     else:
@@ -613,12 +641,24 @@ def get_chart_stats(current_user):
 
 @app.route('/api/logs', methods=['GET'])
 def get_logs():
-    logs = Attendance.query.order_by(Attendance.checkin_time.desc()).limit(20).all()
+    date_str = request.args.get('date')
+    if date_str:
+        try:
+            target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            target_date = datetime.now().date()
+    else:
+        target_date = datetime.now().date()
+
+    logs = Attendance.query.filter_by(work_date=target_date).order_by(Attendance.checkin_time.desc()).all()
     results = [{
         "name": l.user.name, 
-        "time": l.checkin_time.strftime("%H:%M:%S %d/%m") if l.checkin_time else "", 
+        "time": l.checkin_time.strftime("%H:%M:%S %d/%m") if l.checkin_time else "-", 
         "checkout": l.checkout_time.strftime("%H:%M:%S %d/%m") if l.checkout_time else "-",
-        "status": l.status.value if hasattr(l.status, 'value') else str(l.status)
+        "status": l.status.value if hasattr(l.status, 'value') else str(l.status),
+        "late_minutes": l.late_minutes,
+        "early_leave_minutes": l.early_leave_minutes,
+        "overtime_minutes": l.overtime_minutes
     } for l in logs]
     return jsonify(results)
 
@@ -780,17 +820,9 @@ if __name__ == '__main__':
     def finalize_daily_attendance():
         with app.app_context():
             print(f"[{datetime.now()}] Bắt đầu chạy Cron Job: Chốt công cuối ngày...")
+            today = datetime.now().date()
             today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
             
-            # 1. Chốt đơn những người quên Check-out thành Vắng mặt
-            open_attendances = Attendance.query.filter(
-                Attendance.checkin_time >= today_start,
-                Attendance.checkout_time == None
-            ).all()
-            for record in open_attendances:
-                record.status = AttendanceStatus.ABSENT
-            
-            # 2. Quét những User không có record chấm công hoặc xin nghỉ hôm nay -> Vắng mặt
             active_users = User.query.filter_by(is_active=True).all()
             for user in active_users:
                 # Bỏ qua Admin
@@ -803,23 +835,36 @@ if __name__ == '__main__':
                     LeaveRequest.start_date <= datetime.now(),
                     LeaveRequest.end_date >= today_start
                 ).first()
-                if leave: continue
                 
                 # Có chấm công không?
-                att = Attendance.query.filter(
-                    Attendance.user_id == user.id,
-                    Attendance.checkin_time >= today_start
-                ).first()
+                att = Attendance.query.filter_by(user_id=user.id, work_date=today).first()
                 
                 if not att:
-                    # Tạo record vắng mặt
-                    new_absent = Attendance(
+                    # Tạo record hiện trạng
+                    new_att = Attendance(
                         user_id=user.id,
-                        checkin_time=datetime.now().replace(hour=8, minute=0, second=0), # Dummy checkin cho người vắng
-                        checkout_time=datetime.now().replace(hour=17, minute=0, second=0), # Dummy checkout
-                        status=AttendanceStatus.ABSENT
+                        work_date=today,
+                        status=AttendanceStatus.ON_LEAVE if leave else AttendanceStatus.ABSENT,
                     )
-                    db.session.add(new_absent)
+                    db.session.add(new_att)
+                elif att.checkin_time and not att.checkout_time:
+                    # Auto-checkout for forgotten checkouts
+                    if att.shift_id:
+                        shift = Shift.query.get(att.shift_id)
+                        if shift:
+                            start_time_obj = datetime.strptime(shift.start_time, "%H:%M:%S").time()
+                            end_time_obj = datetime.strptime(shift.end_time, "%H:%M:%S").time()
+                            
+                            checkout_dt = datetime.combine(today, end_time_obj)
+                            if end_time_obj <= start_time_obj:
+                                checkout_dt += timedelta(days=1)
+                            
+                            att.checkout_time = checkout_dt
+                    else:
+                        att.checkout_time = att.checkin_time + timedelta(hours=8)
+                        
+                    att.early_leave_minutes = 0
+                    att.overtime_minutes = 0
                     
             db.session.commit()
             print(f"[{datetime.now()}] Hoàn tất Cron Job Chốt Công!")

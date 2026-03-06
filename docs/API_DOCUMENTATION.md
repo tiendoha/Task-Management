@@ -123,32 +123,44 @@ Logic "Smart Shift" tự động xác định ca dựa trên giờ Check-in.
 
 ### 4.1. Check-in / Check-out
 - **Endpoint**: `POST /api/checkin`
-- **Body**: `{ "image": "data:image/jpeg;base64,..." }`
-- **Quy tắc tính công (Mới & Chặt chẽ)**:
-    1. **Nhận diện khuôn mặt** -> Lấy `user_id`.
-    2. **Xác định ca làm việc hiện tại** (`ShiftManager`).
-    3. **Kiểm tra User đã check-in hôm nay chưa?**
-        - **Check-in (Ghi nhận lần đầu)**: Tạo record `Check-in`.
-          - Nếu quẹt thẻ vào trong khoảng `[Giờ vào - 15 phút, Giờ vào]` -> Trạng thái **Đúng giờ (ON_TIME)**.
-          - Nếu quẹt thẻ lố Giờ vào của ca (Dù chỉ 1 giây) -> Trạng thái **Đi muộn (LATE)**.
-        - **Check-out (Ghi nhận khi ra về)**: Update record hôm đó thành `Check-out` (Có Antispam chống liên tục 60s).
-          - Nếu quẹt ra sớm hơn `Giờ ra - 5 phút` -> Đổi trạng thái lịch sử trong ngày thành **Về sớm (EARLY_LEAVE)**.
-          - Nếu quẹt ra trễ hơn `Giờ ra + 10 phút` -> Sinh trạng thái **Ngoài giờ (OVERTIME)**, hệ thống tự động tính lũy kế số phút dư rồi lấp vào cột `overtime_minutes` dưới Database.
-          - Nếu quẹt ra nằm giữa `[Giờ ra - 5p, Giờ ra + 10p]` -> Vẫn giữ vững cờ Đã ghi nhận khi mới vào (Nghĩa là `ON_TIME` hoặc `LATE`).
-- **Response (Thành công)**: Trả về đoạn text `status` tiếng Việt cực kỳ rõ nét để bắn thẳng lên màn hình hiển thị ngay lập tức.
+- **Quy tắc tính công & Quản lý Ca Đêm**:
+    1. **work_date thay vì checkin_time**: Hệ thống mới theo dõi và nhóm phiên chấm công qua `work_date` (Chứ không lấy giờ hệ thống như trước kia). Điều này cho phép nhân sự Ca Đêm (22:00 -> 06:00 sáng hôm sau) được gộp chung vào bảng công ngày hôm trước một cách chính xác. Mọi logic so khớp sau này tự động tính tới tham số vượt qua quá nửa đêm.
+    2. **Kiểm tra User đã có bảng công (Attendance) trong `work_date` hiện tại hay chưa?**
+        - **Check-in (Chưa có Record)**: Sinh record mới, gán `status = PRESENT`. Trỏ cột `late_minutes` dựa theo việc lúc quẹt thẻ đã vượt quá Ca Làm Việc (`shift_start` + `grace_period_minutes`) bao lâu.
+        - **Check-out (Đã có Record)**: Gọi Update record cũ, ghi `checkout_time`.
+          - Sinh `early_leave_minutes` nếu giờ về bé hơn Hour của `shift_end`.
+          - Sinh `overtime_minutes` nếu quẹt thẻ về vượt 10 phút sau khi tan làm.
+- **Lưu ý Statuses (Đã rút gọn)**: Thay vì lưu 6 trạng thái rời rạc, Database mới quy chuẩn lại duy nhất 3 giá trị: `PRESENT` (Có mặt/Check-in), `ABSENT` (Vắng), và `ON_LEAVE` (Nghỉ Phép). Việc Muộn hay Sớm đã được định lượng bằng thông số Phút trong CSDL.
 
 ### 4.2. Chốt công tự động (Tự động hóa bằng APScheduler)
-- **Cơ chế hoạt động**: Sử dụng một Background Thread (`BackgroundScheduler`) chạy ngầm hoàn toàn độc lập với Server Thread Flask API.
-- **Chu kỳ chạy**: Cố định đúng **23:59:00** (Múi Asia/Ho_Chi_Minh) hằng ngày. Đảm bảo đúng chuẩn sát phạt qua ngày.
+- **Chu kỳ chạy**: Cố định đúng **23:59:00** (Múi Asia/Ho_Chi_Minh).
 - **Nghiệp vụ Xử lý Data**:
-    1. **Thu gom rác**: Quét mỏi mắt toàn cõi DB, ai đã Check-in ban ngày nhưng đang ở trạng thái Cả Đêm Không Về (`checkout_time=None`) -> Đâm thẳng flag **Vắng mặt (ABSENT)**. Không khoan nhượng sửa trạng thái đã làm cả ngày.
-    2. **Xử phạt làm biếng**: Quét tiếp 1 list tất cả Account Nhân Sự Đang kích hoạt. Ai nay Đi làm mà **Chưa từng ghi nhận quẹt thẻ** và đồng thời **KHÔNG có tờ giấy xin nghỉ phép (Approved)** -> Background Thread tự dựng 1 cái Dummy Row, Fake Giờ Vào / Giờ Ra để lưu thành **Vắng mặt (ABSENT)**. Dữ liệu chuẩn cho Report Cuối Tháng sau này.
+    1. **Thu gom rác Ca Khuyết**: Những ai Check-in nhưng Quên Check-out sẽ được Tự động Checkout vào lúc `shift_end` của Ca đó. KHÔNG bị phạt Overtime hay Early Leave (`= 0`).
+    2. **Xử phạt Vắng Mặt**: Lọc tất cả Staff. Nếu không có `Attendance` Record hiện diện hôm nay VÀ không có `LeaveRequest` hợp lệ -> Cắm cờ `ABSENT`. Nếu có `LeaveRequest` hợp lệ -> Cắm cờ `ON_LEAVE`.
 - **Response (Thất bại - Face Anti-Spoofing)**: Nếu đưa ảnh màn hình điện thoại hoặc ảnh in mờ, AI sẽ từ chối và cảnh báo.
   ```json
   {
     "success": false, 
     "message": "Không nhận diện được khuôn mặt: Spoofing detected: Phát hiện hình ảnh giả mạo!"
   }
+  ```
+
+### 4.3. API Truy vấn Lịch sử Điểm danh (Logs)
+- **Endpoint**: `GET /api/logs?date=YYYY-MM-DD`
+- **Query Parameter**: Trền param `date` (Mặc định query `today` nếu không gửi). Dùng tham số này để render bảng tổng hợp theo ngày.
+- **Response Format**: Data trả về đã được bind ghép với các thông số phạt (Dành cho Dashboard/Báo Cáo Cuối Tháng).
+  ```json
+  [
+    {
+      "name": "Nguyen Van A",
+      "status": "PRESENT",
+      "time": "08:15:00 01/03",
+      "checkout": "17:35:00 01/03",
+      "late_minutes": 15,
+      "early_leave_minutes": 0,
+      "overtime_minutes": 10
+    }
+  ]
   ```
 
 ---

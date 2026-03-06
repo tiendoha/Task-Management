@@ -13,12 +13,9 @@ class UserRole(enum.Enum):
 
 # 1. Định nghĩa Enum trạng thái chấm công
 class AttendanceStatus(enum.Enum):
-    ON_TIME = "on_time"       # Đúng giờ
-    LATE = "late"             # Đi muộn
-    EARLY_LEAVE = "early"     # Về sớm
-    OVERTIME = "overtime"     # Ngoài giờ (Không thuộc ca nào)
-    ON_LEAVE = "on_leave"     # Nghỉ phép
-    ABSENT = "absent"         # Vắng mặt
+    PRESENT = "PRESENT"       # Có mặt (Check-in thành công)
+    ABSENT = "ABSENT"         # Vắng mặt
+    ON_LEAVE = "ON_LEAVE"     # Nghỉ phép
 
 class LeaveStatus(enum.Enum):
     PENDING = "pending"
@@ -93,14 +90,19 @@ class Attendance(db.Model):
     # 2. Link với Shift để biết hôm đó làm ca nào
     shift_id = db.Column(db.Integer, db.ForeignKey('shift.id'), nullable=True)
     
+    work_date = db.Column(db.Date, nullable=False)
     checkin_time = db.Column(db.DateTime, nullable=True)
     checkout_time = db.Column(db.DateTime, nullable=True)
     
     # 3. Lưu trạng thái
-    status = db.Column(SQLAlchemyEnum(AttendanceStatus), default=AttendanceStatus.ON_TIME)
+    status = db.Column(SQLAlchemyEnum(AttendanceStatus), default=AttendanceStatus.PRESENT)
     
-    # 4. Lưu OTP/Tính thêm giờ
+    # 4. Lưu phút đi muộn, về sớm, làm thêm
+    late_minutes = db.Column(db.Integer, default=0)
+    early_leave_minutes = db.Column(db.Integer, default=0)
     overtime_minutes = db.Column(db.Integer, default=0)
+
+    __table_args__ = (db.UniqueConstraint('user_id', 'work_date', name='unique_user_work_date'),)
     
     # Relationships
     shift = db.relationship('Shift', backref='attendances')

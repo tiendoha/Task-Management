@@ -21,26 +21,30 @@ class LeaveManager:
         end_date = leave_request.end_date
         
         while current_date <= end_date:
-            day_start = current_date.replace(hour=0, minute=0, second=0, microsecond=0)
-            day_end = current_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+            target_date = current_date.date()
             
-            attendance = Attendance.query.filter(
-                Attendance.user_id == leave_request.user_id,
-                Attendance.checkin_time >= day_start,
-                Attendance.checkin_time <= day_end
+            attendance = Attendance.query.filter_by(
+                user_id=leave_request.user_id,
+                work_date=target_date
             ).first()
             
             if attendance:
                 # Update existing
                 attendance.status = AttendanceStatus.ON_LEAVE
                 attendance.checkout_time = None 
+                attendance.late_minutes = 0
+                attendance.early_leave_minutes = 0
+                attendance.overtime_minutes = 0
             else:
                 # Create new
                 new_attendance = Attendance(
                     user_id=leave_request.user_id,
-                    checkin_time=day_start,
+                    work_date=target_date,
                     status=AttendanceStatus.ON_LEAVE,
-                    shift_id=None
+                    shift_id=None,
+                    late_minutes=0,
+                    early_leave_minutes=0,
+                    overtime_minutes=0
                 )
                 db.session.add(new_attendance)
             
