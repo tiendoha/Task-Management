@@ -8,12 +8,13 @@ import numpy as np
 import base64
 
 # Import Models và AI Engine
-from models.db_models import db, User, Shift, Attendance, UserRole, AttendanceStatus, LeaveRequest, LeaveType, LeaveStatus
-from sqlalchemy import func 
+from models.db_models import db, User, Shift, Attendance, UserRole, AttendanceStatus, LeaveRequest, LeaveType, LeaveStatus, Payroll
+from sqlalchemy import func
 from core.ai_engine import AIEngine
 from core.security import hash_password, verify_password, generate_token, token_required
 from core.shift_manager import ShiftManager
 from core.leave_manager import LeaveManager
+from core.salary_manager import SalaryManager
 from utils.mail_service import init_mail
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -793,6 +794,80 @@ def force_change_password(current_user):
     db.session.commit()
     
     return jsonify({"success": True, "message": "Đã đổi mật khẩu thành công. Vui lòng đăng nhập lại."})
+
+# ==========================================
+# 6. PAYROLL MANAGEMENT APIs
+# ==========================================
+
+@app.route('/api/payroll/calculate', methods=['POST'])
+@token_required(roles=['admin'])
+def calculate_payroll(current_user):
+    data = request.json
+    month = data.get('month')
+    year = data.get('year')
+    
+    if not month or not year:
+        return jsonify({"success": False, "message": "Vui lòng cung cấp tháng và năm."}), 400
+        
+    try:
+        month = int(month)
+        year = int(year)
+    except ValueError:
+        return jsonify({"success": False, "message": "Tháng và năm không hợp lệ."}), 400
+        
+    result = SalaryManager.calculate_monthly_payroll(month, year)
+    if result.get("success"):
+        return jsonify(result), 200
+    else:
+        return jsonify(result), 500
+
+@app.route('/api/payroll', methods=['GET'])
+@token_required()
+def get_payroll(current_user):
+    month_str = request.args.get('month')
+    year_str = request.args.get('year')
+    
+    query = Payroll.query
+    
+    # Nhân viên chỉ lấy bảng lương của chính mình
+    if current_user.role != UserRole.ADMIN:
+        query = query.filter_by(user_id=current_user.id)
+        
+    if month_str:
+        try:
+            query = query.filter_by(month=int(month_str))
+        except ValueError:
+            pass
+            
+    if year_str:
+        try:
+            query = query.filter_by(year=int(year_str))
+        except ValueError:
+            pass
+            
+    # Xếp tháng mới gần đây lên đầu
+    payrolls = query.order_by(Payroll.year.desc(), Payroll.month.desc()).all()
+    
+    results = []
+    for p in payrolls:
+        results.append({
+            "id": p.id,
+            "user_id": p.user_id,
+            "name": p.user.name if p.user else "Unknown",
+            "month": p.month,
+            "year": p.year,
+            "base_salary": p.base_salary,
+            "total_working_days": p.total_working_days,
+            "total_late_minutes": p.total_late_minutes,
+            "total_early_minutes": p.total_early_minutes,
+            "total_overtime_minutes": p.total_overtime_minutes,
+            "deductions": round(p.deductions, 2),
+            "overtime_bonus": round(p.overtime_bonus, 2),
+            "net_salary": round(p.net_salary, 2),
+            "is_paid": p.is_paid
+        })
+        
+    return jsonify(results)
 
 if __name__ == '__main__':
     with app.app_context():

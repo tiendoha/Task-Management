@@ -58,6 +58,7 @@ class User(db.Model):
     is_active = db.Column(db.Boolean, default=True, nullable=False)
     change_password_request = db.Column(db.Boolean, default=False, nullable=False)
     must_change_password = db.Column(db.Boolean, default=False, nullable=False)
+    base_salary = db.Column(db.Float, default=0.0) # Base salary field cho tính lương
     
     # Foreign Key & Relationship
     shift_id = db.Column(db.Integer, db.ForeignKey('shift.id'), nullable=True)
@@ -65,6 +66,7 @@ class User(db.Model):
     
     attendances = db.relationship('Attendance', backref='user', lazy=True)
     leaves = db.relationship('LeaveRequest', backref='user', lazy=True)
+    payrolls = db.relationship('Payroll', backref='user', lazy=True)
 
     def to_dict(self):
         return {
@@ -117,3 +119,23 @@ class LeaveRequest(db.Model):
     status = db.Column(SQLAlchemyEnum(LeaveStatus), default=LeaveStatus.PENDING)
     admin_comment = db.Column(db.String(255), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+class Payroll(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    month = db.Column(db.Integer, nullable=False)
+    year = db.Column(db.Integer, nullable=False)
+    
+    base_salary = db.Column(db.Float, default=0.0)
+    total_working_days = db.Column(db.Float, default=0.0)
+    total_late_minutes = db.Column(db.Integer, default=0)
+    total_early_minutes = db.Column(db.Integer, default=0)
+    total_overtime_minutes = db.Column(db.Integer, default=0)
+    
+    deductions = db.Column(db.Float, default=0.0)
+    overtime_bonus = db.Column(db.Float, default=0.0)
+    net_salary = db.Column(db.Float, default=0.0)
+    
+    is_paid = db.Column(db.Boolean, default=False)
+    
+    __table_args__ = (db.UniqueConstraint('user_id', 'month', 'year', name='unique_user_month_year'),)
