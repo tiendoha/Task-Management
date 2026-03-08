@@ -345,8 +345,8 @@ def checkin():
     if img is None:
         return jsonify({"success": False, "message": "Lỗi ảnh đầu vào!"}), 400
 
-    users = User.query.all()
-    valid_users = [u for u in users if u.face_encoding is not None]
+    # Tối ưu hóa Database Query: Lọc thẳng User đang Active và có mã hóa khuôn mặt từ DB
+    valid_users = User.query.filter(User.is_active == True, User.face_encoding.isnot(None)).all()
 
     if not valid_users:
         return jsonify({"success": False, "message": "Chưa có dữ liệu khuôn mặt nào trong hệ thống!"}), 400
@@ -356,7 +356,10 @@ def checkin():
     if input_embedding is None:
         return jsonify({"success": False, "message": f"Không nhận diện được khuôn mặt: {msg}"}), 400
 
-    matched_user, distance = AIEngine.find_match(input_embedding, users)
+    matched_user, distance = AIEngine.find_match(input_embedding, valid_users)
+
+    if not matched_user:
+        return jsonify({"success": False, "message": "Khuôn mặt không có trong hệ thống!"}), 400
 
     if matched_user:
         user = matched_user
