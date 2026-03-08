@@ -237,7 +237,8 @@ def create_employee(current_user):
         dob=data.get('dob'),
         role=role_enum, 
         face_encoding=encodings_to_save,
-        shift_id=int(data.get('shift_id')) if data.get('shift_id') else None
+        shift_id=int(data.get('shift_id')) if data.get('shift_id') else None,
+        base_salary=float(data.get('base_salary', 0))
     )
     db.session.add(new_user)
     db.session.commit()
@@ -278,6 +279,12 @@ def update_employee(current_user, id):
             
     if data.get('shift_id'):
         user.shift_id = int(data.get('shift_id'))
+        
+    if 'base_salary' in data:
+        try:
+            user.base_salary = float(data.get('base_salary'))
+        except ValueError:
+            pass
 
     # Password Change Logic
     if data.get('password'):
@@ -345,7 +352,6 @@ def checkin():
     if img is None:
         return jsonify({"success": False, "message": "Lỗi ảnh đầu vào!"}), 400
 
-    # Tối ưu hóa Database Query: Lọc thẳng User đang Active và có mã hóa khuôn mặt từ DB
     valid_users = User.query.filter(User.is_active == True, User.face_encoding.isnot(None)).all()
 
     if not valid_users:
@@ -357,9 +363,6 @@ def checkin():
         return jsonify({"success": False, "message": f"Không nhận diện được khuôn mặt: {msg}"}), 400
 
     matched_user, distance = AIEngine.find_match(input_embedding, valid_users)
-
-    if not matched_user:
-        return jsonify({"success": False, "message": "Khuôn mặt không có trong hệ thống!"}), 400
 
     if matched_user:
         user = matched_user
@@ -701,10 +704,13 @@ def create_shift(current_user):
         duration = end_obj - start_obj
         if duration <= timedelta(minutes=15):
              return jsonify({"success": False, "message": "Khoảng thời gian ca làm việc (Shift) phải dài hơn 15 phút!"}), 400
+             
+        start_time_str = start_obj.strftime("%H:%M:%S")
+        end_time_str = end_obj.strftime("%H:%M:%S")
     except ValueError:
         return jsonify({"success": False, "message": "Định dạng thời gian Start/End không hợp lệ"}), 400
 
-    new_shift = Shift(name=name, start_time=start_time, end_time=end_time, grace_period_minutes=grace)
+    new_shift = Shift(name=name, start_time=start_time_str, end_time=end_time_str, grace_period_minutes=grace)
     db.session.add(new_shift)
     db.session.commit()
     
@@ -735,12 +741,15 @@ def update_shift(current_user, id):
         duration = end_obj - start_obj
         if duration <= timedelta(minutes=15):
              return jsonify({"success": False, "message": "Khoảng thời gian ca làm việc (Shift) phải dài hơn 15 phút!"}), 400
+             
+        start_time_str = start_obj.strftime("%H:%M:%S")
+        end_time_str = end_obj.strftime("%H:%M:%S")
     except ValueError:
         return jsonify({"success": False, "message": "Định dạng thời gian Start/End không hợp lệ"}), 400
 
     shift.name = new_name
-    shift.start_time = start_time
-    shift.end_time = end_time
+    shift.start_time = start_time_str
+    shift.end_time = end_time_str
     shift.grace_period_minutes = data.get('grace_period_minutes', shift.grace_period_minutes)
     
     db.session.commit()

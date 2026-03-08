@@ -84,7 +84,8 @@ class User(db.Model):
             "is_active": self.is_active,
             "change_password_request": self.change_password_request,
             "must_change_password": self.must_change_password,
-            "join_date": self.join_date.strftime("%Y-%m-%d") if self.join_date else None
+            "base_salary": self.base_salary,
+            "join_date": self.join_date.strftime("%Y-%m-%d") if getattr(self, 'join_date', None) else None
         }
 
 class Attendance(db.Model):
