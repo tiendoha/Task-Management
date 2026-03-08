@@ -1,6 +1,6 @@
 from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import pandas as pd
 import io
 import cv2
@@ -651,7 +651,7 @@ def get_logs():
     else:
         target_date = datetime.now().date()
 
-    logs = Attendance.query.filter_by(work_date=target_date).order_by(Attendance.checkin_time.desc()).all()
+    logs = Attendance.query.filter(Attendance.work_date == target_date).order_by(Attendance.checkin_time.desc().nullslast()).all()
     results = [{
         "name": l.user.name, 
         "time": l.checkin_time.strftime("%H:%M:%S %d/%m") if l.checkin_time else "-", 
@@ -676,7 +676,7 @@ def get_shifts():
 
 @app.route('/api/shifts', methods=['POST'])
 @token_required(roles=['admin'])
-def create_shift(current_user): # Added decorator logic
+def create_shift(current_user):
     data = request.json
     name = data.get('name')
     start_time = data.get('start_time')
@@ -685,6 +685,21 @@ def create_shift(current_user): # Added decorator logic
     
     if not name or not start_time or not end_time:
          return jsonify({"success": False, "message": "Thiếu thông tin bắt buộc"}), 400
+
+    if Shift.query.filter_by(name=name).first():
+         return jsonify({"success": False, "message": "Tên ca làm việc đã bị trùng!"}), 400
+
+    try:
+        start_obj = datetime.strptime(start_time[:5], "%H:%M")
+        end_obj = datetime.strptime(end_time[:5], "%H:%M")
+        if end_obj <= start_obj:
+            end_obj += timedelta(days=1)
+            
+        duration = end_obj - start_obj
+        if duration <= timedelta(minutes=15):
+             return jsonify({"success": False, "message": "Khoảng thời gian ca làm việc (Shift) phải dài hơn 15 phút!"}), 400
+    except ValueError:
+        return jsonify({"success": False, "message": "Định dạng thời gian Start/End không hợp lệ"}), 400
 
     new_shift = Shift(name=name, start_time=start_time, end_time=end_time, grace_period_minutes=grace)
     db.session.add(new_shift)
@@ -700,9 +715,29 @@ def update_shift(current_user, id):
          return jsonify({"success": False, "message": "Ca làm việc không tồn tại"}), 404
     
     data = request.json
-    shift.name = data.get('name', shift.name)
-    shift.start_time = data.get('start_time', shift.start_time)
-    shift.end_time = data.get('end_time', shift.end_time)
+    new_name = data.get('name', shift.name)
+    start_time = data.get('start_time', shift.start_time)
+    end_time = data.get('end_time', shift.end_time)
+    
+    duplicate = Shift.query.filter(Shift.name == new_name, Shift.id != id).first()
+    if duplicate:
+        return jsonify({"success": False, "message": "Tên ca làm việc đã bị trùng!"}), 400
+
+    try:
+        start_obj = datetime.strptime(start_time[:5], "%H:%M")
+        end_obj = datetime.strptime(end_time[:5], "%H:%M")
+        if end_obj <= start_obj:
+            end_obj += timedelta(days=1)
+            
+        duration = end_obj - start_obj
+        if duration <= timedelta(minutes=15):
+             return jsonify({"success": False, "message": "Khoảng thời gian ca làm việc (Shift) phải dài hơn 15 phút!"}), 400
+    except ValueError:
+        return jsonify({"success": False, "message": "Định dạng thời gian Start/End không hợp lệ"}), 400
+
+    shift.name = new_name
+    shift.start_time = start_time
+    shift.end_time = end_time
     shift.grace_period_minutes = data.get('grace_period_minutes', shift.grace_period_minutes)
     
     db.session.commit()
@@ -869,9 +904,51 @@ def get_payroll(current_user):
         
     return jsonify(results)
 
+def backfill_attendance():
+    print(f"[{datetime.now()}] Bắt đầu chạy Backfill...")
+    active_users = User.query.filter_by(is_active=True).all()
+    today_date = date.today()
+    for emp in active_users:
+        if emp.role.value == 'admin':
+            continue
+        
+        current_date = emp.join_date
+        if not current_date:
+            continue
+            
+        while current_date <= (today_date - timedelta(days=1)):
+            leave = LeaveRequest.query.filter(
+                LeaveRequest.user_id == emp.id,
+                LeaveRequest.status == LeaveStatus.APPROVED,
+                LeaveRequest.start_date <= datetime.combine(current_date, datetime.max.time()),
+                LeaveRequest.end_date >= datetime.combine(current_date, datetime.min.time())
+            ).first()
+            
+            target_status = AttendanceStatus.ON_LEAVE if leave else AttendanceStatus.ABSENT
+            
+            att = Attendance.query.filter(Attendance.user_id == emp.id, Attendance.work_date == current_date).first()
+            if att:
+                if not att.status:
+                    att.status = target_status
+            else:
+                new_att = Attendance(
+                    user_id=emp.id,
+                    work_date=current_date,
+                    checkin_time=None,
+                    checkout_time=None,
+                    status=target_status
+                )
+                db.session.add(new_att)
+                
+            current_date += timedelta(days=1)
+            
+    db.session.commit()
+    print(f"[{datetime.now()}] Hoàn tất Backfill!")
+
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
+        backfill_attendance()
         # Tạo sẵn tài khoản config ban đầu nếu chưa có admin
         admin = User.query.filter_by(username='admin').first()
         if not admin:

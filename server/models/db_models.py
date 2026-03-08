@@ -59,6 +59,7 @@ class User(db.Model):
     change_password_request = db.Column(db.Boolean, default=False, nullable=False)
     must_change_password = db.Column(db.Boolean, default=False, nullable=False)
     base_salary = db.Column(db.Float, default=0.0) # Base salary field cho tính lương
+    join_date = db.Column(db.Date, default=lambda: datetime.now().date())
     
     # Foreign Key & Relationship
     shift_id = db.Column(db.Integer, db.ForeignKey('shift.id'), nullable=True)
@@ -82,7 +83,8 @@ class User(db.Model):
             "face_image": True if self.face_encoding is not None else False,
             "is_active": self.is_active,
             "change_password_request": self.change_password_request,
-            "must_change_password": self.must_change_password
+            "must_change_password": self.must_change_password,
+            "join_date": self.join_date.strftime("%Y-%m-%d") if self.join_date else None
         }
 
 class Attendance(db.Model):
