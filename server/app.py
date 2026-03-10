@@ -9,7 +9,8 @@ import base64
 
 # Import Models và AI Engine
 from models.db_models import db, User, Shift, Attendance, UserRole, AttendanceStatus, LeaveRequest, LeaveType, LeaveStatus, Payroll
-from sqlalchemy import func
+from sqlalchemy import func, extract
+import calendar
 from core.ai_engine import AIEngine
 from core.security import hash_password, verify_password, generate_token, token_required
 from core.shift_manager import ShiftManager
@@ -566,84 +567,150 @@ def finish_face_setup(current_user):
 
 @app.route('/api/stats', methods=['GET'])
 def get_stats():
-    total_users = User.query.count()
+    total_users = User.query.filter_by(is_active=True).count()
     today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     logs_today = Attendance.query.filter(Attendance.checkin_time >= today_start).all()
     
-    present_count = len(set([l.user_id for l in logs_today]))
-    late_count = len([l for l in logs_today if l.status == AttendanceStatus.LATE])
-    
+    present_today = len(set([l.user_id for l in logs_today if l.status in [AttendanceStatus.PRESENT, AttendanceStatus.ON_TIME]]))
+    late_today = len(set([l.user_id for l in logs_today if l.status == AttendanceStatus.LATE]))
+    early_leave_today = len(set([l.user_id for l in logs_today if l.early_leave_minutes > 0]))
+    leave_today = len(set([l.user_id for l in logs_today if l.status == AttendanceStatus.ON_LEAVE]))
+
+    # Tính toán vắng mặt tự ý (Không xin phép hoặc checkin)
+    recorded_users = set([l.user_id for l in logs_today])
+    absent_no_permission = total_users - len(recorded_users)
+
+    # Đảm bảo absent_no_permission không âm
+    absent_no_permission = absent_no_permission if absent_no_permission > 0 else 0
+
     return jsonify({
         "total_employees": total_users,
-        "present_today": present_count,
-        "late_today": late_count,
-        "absent": total_users - present_count
+        "present_today": present_today,
+        "late_today": late_today,
+        "early_leave_today": early_leave_today,
+        "leave_today": leave_today,
+        "absent_no_permission": absent_no_permission
     })
 
-@app.route('/api/stats/top-late', methods=['GET'])
+@app.route('/api/stats/employee-ranking', methods=['GET'])
 @token_required(roles=['admin'])
-def get_top_late_stats(current_user):
+def get_employee_ranking(current_user):
     today = datetime.now()
     start_of_month = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     
-    results = db.session.query(
-        Attendance.user_id, 
-        func.count(Attendance.id)
+    # 1. Query sum metrics per user from Attendance
+    stats_query = db.session.query(
+        Attendance.user_id,
+        func.sum(func.coalesce(Attendance.late_minutes, 0)).label('total_late'),
+        func.sum(func.coalesce(Attendance.early_leave_minutes, 0)).label('total_early'),
+        func.sum(func.coalesce(Attendance.overtime_minutes, 0)).label('total_ot')
     ).filter(
-        Attendance.checkin_time >= start_of_month,
-        Attendance.status == AttendanceStatus.LATE
-    ).group_by(
-        Attendance.user_id
-    ).order_by(
-        func.count(Attendance.id).desc()
-    ).limit(5).all()
+        Attendance.work_date >= start_of_month.date()
+    ).group_by(Attendance.user_id).all()
     
-    data = []
-    for user_id, count in results:
+    # 2. Query leave days per user in this month
+    leave_query = db.session.query(
+        Attendance.user_id,
+        func.count(Attendance.id).label('leave_days')
+    ).filter(
+        Attendance.work_date >= start_of_month.date(),
+        Attendance.status == AttendanceStatus.ON_LEAVE
+    ).group_by(Attendance.user_id).all()
+    
+    leave_map = {row.user_id: row.leave_days for row in leave_query}
+
+    # 3. Compile scores
+    scored_users = []
+    
+    for row in stats_query:
+        user_id = row.user_id
+        late = row.total_late or 0
+        early = row.total_early or 0
+        ot = row.total_ot or 0
+        leave_days = leave_map.get(user_id, 0)
+        
+        # Exact FE Formula: score = (ot * 2) - late - early - (leave_days * 2)
+        score = (ot * 2) - late - early - (leave_days * 2)
+        
         user = User.query.get(user_id)
-        if user:
-            data.append({
+        if user and user.is_active and user.role != UserRole.ADMIN:
+            scored_users.append({
+                "id": user.id,
                 "name": user.name,
-                "count": count,
-                "avatar": True if user.face_encoding is not None else False
+                "avatar": user.face_encoding is not None,
+                "score": score,
+                "late_minutes": late,
+                "early_minutes": early,
+                "ot_minutes": ot,
+                "leave_days": leave_days
             })
             
-    return jsonify(data)
+    # Sort by score descending
+    scored_users.sort(key=lambda x: x["score"], reverse=True)
+    
+    return jsonify({
+        "best": scored_users[:5],
+        "worst": scored_users[-5:][::-1] if len(scored_users) > 5 else scored_users[::-1]
+    })
 
 @app.route('/api/stats/chart', methods=['GET'])
 @token_required(roles=['admin'])
 def get_chart_stats(current_user):
     today = datetime.now()
-    dates = [(today - timedelta(days=i)).date() for i in range(6, -1, -1)]
+    year = today.year
+    month = today.month
     
-    # Initialize data structure
-    stats_map = {d: {'late': 0, 'ontime': 0} for d in dates}
+    # Get total days in current month
+    _, total_days = calendar.monthrange(year, month)
+    
+    # Prepare list of all dates in the month
+    dates = [date(year, month, day) for day in range(1, total_days + 1)]
+    
+    # Initialize stats map for all 6 metrics
+    stats_map = {d: {
+        'onTime': 0, 'late': 0, 'early': 0, 
+        'ot': 0, 'leave': 0, 'absent': 0
+    } for d in dates}
     
     start_date = dates[0]
-    end_date = dates[-1] + timedelta(days=1) # Ensure we cover the full last day
+    end_date = dates[-1] + timedelta(days=1)
     
+    # Query all attendance logs for the month
     logs = Attendance.query.filter(
-        Attendance.checkin_time >= start_date,
-        Attendance.checkin_time < end_date
+        Attendance.work_date >= start_date,
+        Attendance.work_date < end_date
     ).all()
     
     for log in logs:
-        log_date = log.checkin_time.date()
+        log_date = log.work_date
         if log_date in stats_map:
-            if log.status == AttendanceStatus.LATE:
+            # Categorize status
+            if log.status == AttendanceStatus.ON_TIME or log.status == AttendanceStatus.PRESENT:
+                stats_map[log_date]['onTime'] += 1
+            elif log.status == AttendanceStatus.LATE:
                 stats_map[log_date]['late'] += 1
-            elif log.status == AttendanceStatus.ON_TIME:
-                stats_map[log_date]['ontime'] += 1
+            elif log.status == AttendanceStatus.ON_LEAVE:
+                stats_map[log_date]['leave'] += 1
+            elif log.status == AttendanceStatus.ABSENT:
+                stats_map[log_date]['absent'] += 1
+                
+            # Count specific early/ot independently of status if needed over 0
+            if log.early_leave_minutes and log.early_leave_minutes > 0:
+                stats_map[log_date]['early'] += 1
+            if log.overtime_minutes and log.overtime_minutes > 0:
+                stats_map[log_date]['ot'] += 1
     
-    # Format for output
-    labels = [d.strftime("%d/%m") for d in dates]
-    data_late = [stats_map[d]['late'] for d in dates]
-    data_ontime = [stats_map[d]['ontime'] for d in dates]
+    # Prepare ordered arrays for FE
+    labels = [d.strftime("%Y-%m-%d") for d in dates]
     
     return jsonify({
         "labels": labels,
-        "data_late": data_late,
-        "data_ontime": data_ontime
+        "data_onTime": [stats_map[d]['onTime'] for d in dates],
+        "data_late": [stats_map[d]['late'] for d in dates],
+        "data_early": [stats_map[d]['early'] for d in dates],
+        "data_ot": [stats_map[d]['ot'] for d in dates],
+        "data_leave": [stats_map[d]['leave'] for d in dates],
+        "data_absent": [stats_map[d]['absent'] for d in dates]
     })
 
 @app.route('/api/logs', methods=['GET'])
@@ -867,6 +934,105 @@ def calculate_payroll(current_user):
         return jsonify(result), 200
     else:
         return jsonify(result), 500
+@app.route('/api/payroll/employee-summary', methods=['GET'])
+@token_required(roles=['admin'])
+def get_employee_summary(current_user):
+    month_str = request.args.get('month')
+    year_str = request.args.get('year')
+    now = datetime.now()
+    
+    month = int(month_str) if month_str else now.month
+    year = int(year_str) if year_str else now.year
+    
+    # Trigger recalculation if viewing current month to keep it fresh
+    if month == now.month and year == now.year:
+        SalaryManager.calculate_monthly_payroll(month, year)
+        
+    payrolls = Payroll.query.filter_by(month=month, year=year).all()
+    
+    results = []
+    for p in payrolls:
+        user = User.query.get(p.user_id)
+        if user and user.role != UserRole.ADMIN:
+            results.append({
+                "id": p.id,
+                "employee_code": user.username,
+                "name": user.name,
+                "role": user.role.value if hasattr(user.role, 'value') else "Employee",
+                "base_salary": p.base_salary,
+                "total_working_days": p.total_working_days,
+                "total_late_minutes": p.total_late_minutes,
+                "total_early_minutes": p.total_early_minutes,
+                "overtime_bonus": round(p.overtime_bonus, 2),
+                "deductions": round(p.deductions, 2),
+                "net_salary": round(p.net_salary, 2),
+                "is_paid": p.is_paid
+            })
+            
+    return jsonify(results)
+@app.route('/api/payroll/yearly-total', methods=['GET'])
+@token_required(roles=['admin'])
+def get_yearly_payroll_total(current_user):
+    year_str = request.args.get('year')
+    year = int(year_str) if year_str else datetime.now().year
+    
+    # Trigger full year recount just in case
+    for m in range(1, 13):
+        # We only recalculate up to the current month to avoid future dummy data
+        if year == datetime.now().year and m > datetime.now().month:
+            break
+        SalaryManager.calculate_monthly_payroll(m, year)
+        
+    monthly_breakdown = []
+    total_net_salary = 0
+    
+    for m in range(1, 13):
+        payrolls_in_month = Payroll.query.filter_by(month=m, year=year).all()
+        month_total = sum(p.net_salary for p in payrolls_in_month if p.user and p.user.role != UserRole.ADMIN)
+        monthly_breakdown.append(month_total)
+        total_net_salary += month_total
+        
+    return jsonify({
+        "year": year,
+        "total_net_salary": total_net_salary,
+        "monthly_breakdown": monthly_breakdown
+    })
+@app.route('/api/payroll/pay/<int:id>', methods=['PUT'])
+@token_required(roles=['admin'])
+def pay_payroll(current_user, id):
+    payroll = Payroll.query.get(id)
+    if not payroll:
+        return jsonify({"success": False, "message": "Bản lương không tồn tại"}), 404
+        
+    if payroll.is_paid:
+        return jsonify({"success": False, "message": "Bản lương này đã được thanh toán rồi"}), 400
+        
+    payroll.is_paid = True
+    db.session.commit()
+    return jsonify({"success": True, "message": "Đã thanh toán lương thành công"})
+
+@app.route('/api/payroll/my-salary', methods=['GET'])
+@token_required()
+def get_my_salary(current_user):
+    payrolls = Payroll.query.filter_by(user_id=current_user.id).order_by(Payroll.year.desc(), Payroll.month.desc()).all()
+    
+    results = []
+    for p in payrolls:
+        results.append({
+            "id": p.id,
+            "month": p.month,
+            "year": p.year,
+            "base_salary": p.base_salary,
+            "total_working_days": p.total_working_days,
+            "total_late_minutes": p.total_late_minutes,
+            "total_early_minutes": p.total_early_minutes,
+            "overtime_bonus": round(p.overtime_bonus, 2),
+            "deductions": round(p.deductions, 2),
+            "net_salary": round(p.net_salary, 2),
+            "is_paid": p.is_paid
+        })
+        
+    return jsonify(results)
 
 @app.route('/api/payroll', methods=['GET'])
 @token_required()
