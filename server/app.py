@@ -168,6 +168,10 @@ def login():
     if not user.is_active:
         return jsonify({"success": False, "message": "Tài khoản của bạn đang bị khóa. Vui lòng liên hệ Admin."}), 403
 
+    # Block login if a password reset is pending approval by admin
+    if user.change_password_request:
+        return jsonify({"success": False, "message": "Tài khoản đang có yêu cầu cấp lại mật khẩu. Vui lòng đợi Admin xử lý."}), 403
+
     token = generate_token(user.id, user.role.value)
     return jsonify({
         "success": True,
@@ -567,21 +571,31 @@ def finish_face_setup(current_user):
 
 @app.route('/api/stats', methods=['GET'])
 def get_stats():
-    total_users = User.query.filter_by(is_active=True).count()
-    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    logs_today = Attendance.query.filter(Attendance.checkin_time >= today_start).all()
-    
-    present_today = len(set([l.user_id for l in logs_today if l.status in [AttendanceStatus.PRESENT, AttendanceStatus.ON_TIME]]))
-    late_today = len(set([l.user_id for l in logs_today if l.status == AttendanceStatus.LATE]))
-    early_leave_today = len(set([l.user_id for l in logs_today if l.early_leave_minutes > 0]))
+    today = datetime.now().date()
+    today_start = datetime.combine(today, datetime.min.time())
+
+    # Count only active employees (non-admin) who have already joined
+    eligible_users = User.query.filter(
+        User.is_active == True,
+        User.role != UserRole.ADMIN,
+        User.join_date <= today
+    ).all()
+    total_users = len(eligible_users)
+    eligible_ids = {u.id for u in eligible_users}
+
+    logs_today = Attendance.query.filter(Attendance.work_date == today).all()
+    # Only count logs for eligible employees
+    logs_today = [l for l in logs_today if l.user_id in eligible_ids]
+
+    present_today = len(set([l.user_id for l in logs_today if l.status == AttendanceStatus.PRESENT]))
+    late_today = len(set([l.user_id for l in logs_today if l.late_minutes and l.late_minutes > 0]))
+    early_leave_today = len(set([l.user_id for l in logs_today if l.early_leave_minutes and l.early_leave_minutes > 0]))
     leave_today = len(set([l.user_id for l in logs_today if l.status == AttendanceStatus.ON_LEAVE]))
 
-    # Tính toán vắng mặt tự ý (Không xin phép hoặc checkin)
-    recorded_users = set([l.user_id for l in logs_today])
-    absent_no_permission = total_users - len(recorded_users)
-
-    # Đảm bảo absent_no_permission không âm
-    absent_no_permission = absent_no_permission if absent_no_permission > 0 else 0
+    # Absent = eligible employees with no attendance record today
+    recorded_ids = set([l.user_id for l in logs_today])
+    absent_no_permission = len(eligible_ids - recorded_ids)
+    absent_no_permission = max(0, absent_no_permission)
 
     return jsonify({
         "total_employees": total_users,
@@ -659,52 +673,58 @@ def get_chart_stats(current_user):
     today = datetime.now()
     year = today.year
     month = today.month
-    
+
     # Get total days in current month
     _, total_days = calendar.monthrange(year, month)
-    
-    # Prepare list of all dates in the month
+
+    # Prepare list of all dates in the month (only up to today)
     dates = [date(year, month, day) for day in range(1, total_days + 1)]
-    
+
+    # Count eligible active employees per day (joined on or before that date)
+    eligible_users = User.query.filter(
+        User.is_active == True,
+        User.role != UserRole.ADMIN
+    ).all()
+
     # Initialize stats map for all 6 metrics
     stats_map = {d: {
-        'onTime': 0, 'late': 0, 'early': 0, 
-        'ot': 0, 'leave': 0, 'absent': 0
+        'onTime': 0, 'late': 0, 'early': 0,
+        'ot': 0, 'leave': 0, 'absent': 0,
+        'eligible': len([u for u in eligible_users if u.join_date and u.join_date <= d])
     } for d in dates}
-    
+
     start_date = dates[0]
     end_date = dates[-1] + timedelta(days=1)
-    
-    # Query all attendance logs for the month
+
+    # Query all attendance logs for the month once
     logs = Attendance.query.filter(
         Attendance.work_date >= start_date,
         Attendance.work_date < end_date
     ).all()
-    
+
     for log in logs:
         log_date = log.work_date
         if log_date in stats_map:
-            # Categorize status
-            if log.status == AttendanceStatus.ON_TIME or log.status == AttendanceStatus.PRESENT:
+            if log.status == AttendanceStatus.PRESENT:
                 stats_map[log_date]['onTime'] += 1
-            elif log.status == AttendanceStatus.LATE:
-                stats_map[log_date]['late'] += 1
             elif log.status == AttendanceStatus.ON_LEAVE:
                 stats_map[log_date]['leave'] += 1
             elif log.status == AttendanceStatus.ABSENT:
                 stats_map[log_date]['absent'] += 1
-                
-            # Count specific early/ot independently of status if needed over 0
+
             if log.early_leave_minutes and log.early_leave_minutes > 0:
                 stats_map[log_date]['early'] += 1
+            if log.late_minutes and log.late_minutes > 0:
+                stats_map[log_date]['late'] += 1
             if log.overtime_minutes and log.overtime_minutes > 0:
                 stats_map[log_date]['ot'] += 1
-    
+
     # Prepare ordered arrays for FE
     labels = [d.strftime("%Y-%m-%d") for d in dates]
-    
+
     return jsonify({
         "labels": labels,
+        "data_eligible": [stats_map[d]['eligible'] for d in dates],
         "data_onTime": [stats_map[d]['onTime'] for d in dates],
         "data_late": [stats_map[d]['late'] for d in dates],
         "data_early": [stats_map[d]['early'] for d in dates],
@@ -940,35 +960,58 @@ def get_employee_summary(current_user):
     month_str = request.args.get('month')
     year_str = request.args.get('year')
     now = datetime.now()
-    
+
     month = int(month_str) if month_str else now.month
     year = int(year_str) if year_str else now.year
-    
+
     # Trigger recalculation if viewing current month to keep it fresh
     if month == now.month and year == now.year:
         SalaryManager.calculate_monthly_payroll(month, year)
-        
-    payrolls = Payroll.query.filter_by(month=month, year=year).all()
-    
+
+    payrolls = db.session.query(Payroll, User).join(User, Payroll.user_id == User.id).filter(
+        Payroll.month == month,
+        Payroll.year == year,
+        User.role != UserRole.ADMIN
+    ).all()
+
+    # CRITICAL PERFORMANCE FIX: Pre-load all attendance records for the month ONCE
+    all_attendances = Attendance.query.filter(
+        func.extract('month', Attendance.work_date) == month,
+        func.extract('year', Attendance.work_date) == year
+    ).all()
+
+    # Group by user_id in memory to avoid N+1 queries
+    att_map = {}
+    for a in all_attendances:
+        att_map.setdefault(a.user_id, []).append(a)
+
     results = []
-    for p in payrolls:
-        user = User.query.get(p.user_id)
-        if user and user.role != UserRole.ADMIN:
-            results.append({
-                "id": p.id,
-                "employee_code": user.username,
-                "name": user.name,
-                "role": user.role.value if hasattr(user.role, 'value') else "Employee",
-                "base_salary": p.base_salary,
-                "total_working_days": p.total_working_days,
-                "total_late_minutes": p.total_late_minutes,
-                "total_early_minutes": p.total_early_minutes,
-                "overtime_bonus": round(p.overtime_bonus, 2),
-                "deductions": round(p.deductions, 2),
-                "net_salary": round(p.net_salary, 2),
-                "is_paid": p.is_paid
-            })
-            
+    for p, user in payrolls:
+        # Use in-memory list, NO extra DB query per user
+        attendance_list = att_map.get(user.id, [])
+        leave_days = sum(1 for a in attendance_list if a.status == AttendanceStatus.ON_LEAVE)
+        absent_days = sum(1 for a in attendance_list if a.status == AttendanceStatus.ABSENT)
+        ot_minutes = sum(a.overtime_minutes or 0 for a in attendance_list)
+
+        results.append({
+            "id": p.id,
+            "employee_code": user.username,
+            "name": user.name,
+            "role": user.role.value if hasattr(user.role, 'value') else "Employee",
+            "base_salary": p.base_salary,
+            "total_working_days": p.total_working_days,
+            "total_late_minutes": p.total_late_minutes,
+            "total_early_minutes": p.total_early_minutes,
+            "total_overtime_minutes": p.total_overtime_minutes,
+            "overtime_bonus": round(p.overtime_bonus, 2),
+            "deductions": round(p.deductions, 2),
+            "net_salary": round(p.net_salary, 2),
+            "is_paid": p.is_paid,
+            "leave_days": leave_days,
+            "absent_days": absent_days,
+            "ot_minutes": ot_minutes
+        })
+
     return jsonify(results)
 @app.route('/api/payroll/yearly-total', methods=['GET'])
 @token_required(roles=['admin'])
